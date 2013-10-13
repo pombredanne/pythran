@@ -8,7 +8,7 @@ import ast
 from cxxgen import *
 from cxxtypes import *
 
-from analysis import LocalDeclarations, GlobalDeclarations
+from analysis import LocalDeclarations, GlobalDeclarations, Scope
 from analysis import YieldPoints, BoundedExpressions, ArgumentEffects
 from passmanager import Backend
 
@@ -67,6 +67,7 @@ def strip_exp(s):
     else:
         return s
 
+
 class Cxx(Backend):
     '''
     Produces a C++ representation of the AST.
@@ -95,7 +96,8 @@ class Cxx(Backend):
         self.break_handlers = list()
         self.result = None
         super(Cxx, self).__init__(
-                GlobalDeclarations, BoundedExpressions, Types, ArgumentEffects)
+                GlobalDeclarations, BoundedExpressions, Types, ArgumentEffects,
+                Scope)
 
     # mod
     def visit_Module(self, node):
@@ -142,10 +144,15 @@ class Cxx(Backend):
                 def generate(self, ctx):
                     return self.s
 
-            def __init__(self):
-                self.cache = dict()
-                self.rcache = dict()
-                self.mapping = dict()
+            def __init__(self, other=None):
+                if other:
+                    self.cache = other.cache.copy()
+                    self.rcache = other.rcache.copy()
+                    self.mapping = other.mapping.copy()
+                else:
+                    self.cache = dict()
+                    self.rcache = dict()
+                    self.mapping = dict()
 
             def __call__(self, node):
                 if node not in self.mapping:
@@ -177,13 +184,18 @@ class Cxx(Backend):
         formal_args = [arg.id for arg in fargs]
         formal_types = ["argument_type" + str(i) for i in xrange(len(fargs))]
 
-        ldecls = self.passmanager.gather(LocalDeclarations, node)
-        ldecls = {sym.id: sym for sym in ldecls}  # more convenient as a dict
+        self.ldecls = self.passmanager.gather(LocalDeclarations, node)
 
-        self.local_declarations = set(ldecls.iterkeys()).union(formal_args)
+        self.local_names = {sym.id for sym in self.ldecls}.union(formal_args)
         self.extra_declarations = []
 
-        ldecls = set(ldecls.itervalues())
+        lctx = CachedTypeVisitor()
+        self.local_types = {n: self.types[n].generate(lctx)
+                            for n in self.ldecls}
+
+        # choose one node among all the ones with the same name for each name
+        self.ldecls = {n for _, n in
+                       {n.id: n for n in self.ldecls}.iteritems()}
 
         # 0 is used as initial_state, thus the +1
         self.yields = {k: (1 + v, "yield_point{0}".format(1 + v))
@@ -338,14 +350,14 @@ class Cxx(Backend):
                                 self.yields.itervalues(),
                                 key=lambda x: x[0])))))
 
-            ctx = CachedTypeVisitor()
+            ctx = CachedTypeVisitor(lctx)
             next_members = (
                     [Statement("{0} {1}".format(ft, fa))
                         for (ft, fa) in zip(formal_types, formal_args)]
                     + [Statement("{0} {1}".format(
                         self.types[k].generate(ctx),
                         k.id))
-                        for k in ldecls]
+                        for k in self.ldecls]
                     + [Statement("{0} {1}".format(v, k))
                         for k, v in self.extra_declarations]
                     + [Statement("{0} {1}".format("long",
@@ -448,12 +460,12 @@ class Cxx(Backend):
                     "{0}::operator()".format(node.name),
                     formal_types,
                     formal_args)
-            ctx = CachedTypeVisitor()
+            ctx = CachedTypeVisitor(lctx)
             operator_local_declarations = (
                     [Statement("{0} {1}".format(
-                        self.types[k].generate(ctx), k.id)) for k in ldecls]
+                     self.types[k].generate(ctx), k.id)) for k in self.ldecls]
                     + [Statement("{0} {1}".format(v, k))
-                        for k, v in self.extra_declarations]
+                       for k, v in self.extra_declarations]
                     )
             dependent_typedefs = ctx.typedefs()
             operator_definition = FunctionBody(
@@ -524,11 +536,17 @@ class Cxx(Backend):
         value = self.visit(node.value)
         targets = [self.visit(t) for t in node.targets]
         alltargets = "= ".join(targets)
-        if any(metadata.get(t, metadata.LocalVariable) for t in node.targets):
-            alltargets = ("typename "
-                    "assignable<decltype({1})>::type {0}".format(
-                        alltargets, value)
-                    )
+        islocal = any(metadata.get(t, metadata.LocalVariable)
+                      for t in node.targets)
+        if len(targets) == 1 and isinstance(node.targets[0], ast.Name):
+            islocal |= self.scope[node.targets[0].id] is node
+        if islocal and not self.yields:
+            # remove this decl from local decls
+            tdecls = {t.id for t in node.targets}
+            self.ldecls = {d for d in self.ldecls if d.id not in tdecls}
+            # add a local declaration
+            alltargets = '{} {}'.format(self.local_types[node.targets[0]],
+                                        alltargets)
         stmt = Assign(alltargets, value)
         return self.process_omp_attachements(node, stmt)
 
@@ -589,8 +607,11 @@ class Cxx(Backend):
         prelude = Statement("{0} {1} = {2}".format(
             local_iter_decl, local_iter, iter)
             )
-        has_local = metadata.get(node.target, metadata.LocalVariable)
+        has_local = bool(metadata.get(node.target, metadata.LocalVariable))
+        has_local |= (type(node.target) is ast.Name
+                      and self.scope[node.target.id] is node)
         if has_local and not self.yields and not omp:
+            self.ldecls = {d for d in self.ldecls if d.id != node.target.id}
             loop = AutoFor(
                     target,
                     local_iter,
@@ -865,7 +886,7 @@ class Cxx(Backend):
             return "{1}[{0}]".format(slice, value)
 
     def visit_Name(self, node):
-        if node.id in self.local_declarations:
+        if node.id in self.local_names:
             return node.id
         elif node.id in self.global_declarations:
             return "{0}()".format(node.id)

@@ -176,6 +176,7 @@ class GatherOMPData(Transformation):
             # some directives create a scope, but the holding stmt may not
             # artificially create one here if needed
             sdirective = ''.join(d.s for d in directives)
-            if 'parallel' in sdirective:
+            scoping = ('parallel', 'task', 'section')
+            if any(s in sdirective for s in scoping):
                 node = ast.If(ast.Num(1), [node], [])
         return node

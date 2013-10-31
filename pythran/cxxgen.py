@@ -491,6 +491,9 @@ class BoostPythonModule(object):
 
         return Module(body)
 
+    def __str__(self):
+        return str(self.generate())
+
 
 class CompilationUnit(object):
 

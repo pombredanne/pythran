@@ -4,50 +4,56 @@ This modules contains OpenMP-related stuff.
     * GatherOMPData turns OpenMP-like string annotations into metadata
 '''
 
-import metadata
+from pythran.passmanager import Transformation
+import pythran.metadata as metadata
+
 from ast import AST
 import ast
 import re
-from passmanager import Transformation
 
 keywords = {
-        'atomic',
-        'barrier',
-        'collapse',
-        'copyin',
-        'copyprivate',
-        'critical',
-        'default',
-        'final',
-        'firstprivate',
-        'flush',
-        'for',
-        'if',
-        'lastprivate',
-        'master',
-        'none',
-        'nowait',
-        'num_threads',
-        'omp',
-        'ordered',
-        'parallel',
-        'private',
-        'reduction',
-        'schedule',
-        'section',
-        'sections',
-        'shared',
-        'single',
-        'task',
-        'taskwait',
-        'taskyield',
-        'threadprivate',
-        'untied',
+    'atomic',
+    'barrier',
+    'capture',
+    'collapse',
+    'copyin',
+    'copyprivate',
+    'critical',
+    'default',
+    'final',
+    'firstprivate',
+    'flush',
+    'for',
+    'if',
+    'lastprivate',
+    'master',
+    'mergeable',
+    'none',
+    'nowait',
+    'num_threads',
+    'omp',
+    'ordered',
+    'parallel',
+    'private',
+    'read',
+    'reduction',
+    'schedule',
+    'section',
+    'sections',
+    'shared',
+    'single',
+    'task',
+    'taskwait',
+    'taskyield',
+    'threadprivate',
+    'untied',
+    'update',
+    'write'
 }
 
 reserved_contex = {
-        'default',
-        'schedule',
+    'default',
+    'schedule',
 }
 
 
@@ -63,6 +69,7 @@ class OMPDirective(AST):
     '''
 
     def __init__(self, *args):  # no positional argument to be deep copyable
+        super(OMPDirective, self).__init__()
         if not args:
             return
 
@@ -76,17 +83,17 @@ class OMPDirective(AST):
             curr_index = 0
             in_reserved_context = False
             while curr_index < len(s):
-                m = re.match('^([a-zA-Z_]\w*)', s[curr_index:])
+                m = re.match(r'^([a-zA-Z_]\w*)', s[curr_index:])
                 if m:
                     word = m.group(0)
                     curr_index += len(word)
-                    if (in_reserved_context
-                            or (par_count == 0 and word in keywords)):
+                    if(in_reserved_context or
+                       (par_count == 0 and word in keywords)):
                         out += word
                         in_reserved_context = word in reserved_contex
                     else:
                         v = '{}'
-                        self.deps.append(ast.Name(word, ast.Param()))
+                        self.deps.append(ast.Name(word, ast.Load()))
                         out += v
                 elif s[curr_index] == '(':
                     par_count += 1
@@ -108,9 +115,6 @@ class OMPDirective(AST):
         self.s = tokenize(args[0])
         self._fields = ('deps',)
 
-    def __str__(self):
-        return self.s.format(*[n.id for n in self.deps])
-
 
 ##
 class GatherOMPData(Transformation):
@@ -128,7 +132,7 @@ class GatherOMPData(Transformation):
         Transformation.__init__(self)
         # Remap self.visit_XXXX() to self.attach_data() generic method
         for s in GatherOMPData.statements:
-            setattr(self, "visit_" + s, lambda node_: self.attach_data(node_))
+            setattr(self, "visit_" + s, self.attach_data)
         self.current = list()
 
     def isompdirective(self, node):
@@ -140,7 +144,7 @@ class GatherOMPData(Transformation):
             return None
         else:
             self.attach_data(node)
-        return node
+            return node
 
     def visit_If(self, node):
         if self.isompdirective(node.test):
@@ -162,9 +166,21 @@ class GatherOMPData(Transformation):
         # add a Pass to hold some directives
         for field_name, field in ast.iter_fields(node):
             if field_name in GatherOMPData.statement_lists:
-                if (field
-                        and isinstance(field[-1], ast.Expr)
-                        and self.isompdirective(field[-1].value)):
+                if(field and
+                   isinstance(field[-1], ast.Expr) and
+                   self.isompdirective(field[-1].value)):
                     field.append(ast.Pass())
         self.generic_visit(node)
+
+        # add an If to hold scoping OpenMP directives
+        directives = metadata.get(node, OMPDirective)
+        field_names = {n for n, _ in ast.iter_fields(node)}
+        has_no_scope = field_names.isdisjoint(GatherOMPData.statement_lists)
+        if directives and has_no_scope:
+            # some directives create a scope, but the holding stmt may not
+            # artificially create one here if needed
+            sdirective = ''.join(d.s for d in directives)
+            scoping = ('parallel', 'task', 'section')
+            if any(s in sdirective for s in scoping):
+                node = ast.If(ast.Num(1), [node], [])
         return node

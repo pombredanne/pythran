@@ -2,42 +2,76 @@
 This module contains all the stuff to make your way from python code to
 a dynamic library, see __init__.py for exported interfaces.
 '''
-import sys
-import os.path
-import sysconfig
-import shutil
-import logging
-logger = logging.getLogger(__name__)
 
-from cxxgen import *
+from pythran.backend import Cxx
+from pythran.config import cfg, make_extension
+from pythran.cxxgen import PythonModule, Define, Include, Line, Statement
+from pythran.cxxgen import FunctionBody, FunctionDeclaration, Value, Block
+from pythran.middlend import refine
+from pythran.passmanager import PassManager
+from pythran.tables import pythran_ward
+from pythran.types.types import extract_constructed_types
+from pythran.types.type_dependencies import pytype_to_deps
+from pythran.types.conversion import pytype_to_ctype
+from pythran.spec import expand_specs, specs_to_docstrings
+from pythran.syntax import check_specs
+from pythran.version import __version__
+import pythran.frontend as frontend
+
+from datetime import datetime
+from distutils.errors import CompileError
+from numpy.distutils.core import setup
+from numpy.distutils.extension import Extension
+import numpy.distutils.ccompiler
+
+from tempfile import mkstemp, mkdtemp
 import ast
-from middlend import refine
-from backend import Cxx
-from syntax import check_syntax
-from passes import NormalizeIdentifiers
-from openmp import GatherOMPData
-from config import cfg
-from passmanager import PassManager
-from numpy import get_include
-from typing import extract_constructed_types, pytype_to_ctype
-from tables import pythran_ward, functions
-from intrinsic import ConstExceptionIntr
+import logging
+import os.path
+import shutil
+import sys
+import glob
+import hashlib
 
-from os import devnull
-from subprocess import check_call, check_output, STDOUT, CalledProcessError
-from tempfile import mkstemp, NamedTemporaryFile
-import networkx as nx
+logger = logging.getLogger('pythran')
 
 
-def _format_cmdline(cmd):
-    """No comma when printing a command line allows for copy/paste"""
-    return "'" + "' '".join(cmd) + "'"
+# hook taken from numpy.distutils.compiler
+# with useless steps  and warning removed
+def CCompiler_customize(self, _, need_cxx=0):
+    logger.info('customize %s', self.__class__.__name__)
+    numpy.distutils.ccompiler.customize_compiler(self)
+    if need_cxx:
+        # In general, distutils uses -Wstrict-prototypes, but this option is
+        # not valid for C++ code, only for C.  Remove it if it's there to
+        # avoid a spurious warning on every compilation.
+        try:
+            self.compiler_so.remove('-Wstrict-prototypes')
+        except (AttributeError, ValueError):
+            pass
+
+numpy.distutils.ccompiler.replace_method(numpy.distutils.ccompiler.CCompiler,
+                                         'customize', CCompiler_customize)
 
 
 def _extract_all_constructed_types(v):
     return sorted(set(reduce(lambda x, y: x + y,
-                            (extract_constructed_types(t) for t in v), [])),
+                             (extract_constructed_types(t) for t in v), [])),
                   key=len)
+
+
+def _extract_specs_dependencies(specs):
+    """ Extract types dependencies from specs for each exported signature. """
+    deps = set()
+    # for each function
+    for signatures in specs.values():
+        # for each signature
+        for signature in signatures:
+            # for each argument
+            for t in signature:
+                deps.update(pytype_to_deps(t))
+    # Keep "include" first
+    return sorted(deps, key=lambda x: "include" not in x)
 
 
 def _parse_optimization(optimization):
@@ -49,25 +83,6 @@ def _parse_optimization(optimization):
     if len(splitted) == 1:
         splitted = ['pythran', 'optimizations'] + splitted
     return reduce(getattr, splitted[1:], __import__(splitted[0]))
-
-
-def _python_cppflags():
-    return ["-I" + sysconfig.get_config_var("INCLUDEPY")]
-
-
-def _numpy_cppflags():
-    return ["-I" + os.path.join(get_include(), 'numpy')]
-
-
-def _pythran_cppflags():
-    curr_dir = os.path.dirname(os.path.dirname(__file__))
-    get = lambda *x: '-I' + os.path.join(curr_dir, *x)
-    return [get('.'), get('pythran'), get('pythran', 'pythonic++')]
-
-
-def _python_ldflags():
-    return ["-L" + sysconfig.get_config_var("LIBPL"),
-            "-lpython" + sysconfig.get_config_var('VERSION')]
 
 
 def _get_temp(content, suffix=".cpp"):
@@ -86,125 +101,73 @@ class HasArgument(ast.NodeVisitor):
 
     def visit_Module(self, node):
         for n in node.body:
-            if type(n) is ast.FunctionDef and n.name == self.fname:
+            if isinstance(n, ast.FunctionDef) and n.name == self.fname:
                 return len(n.args.args) > 0
         return False
 
 # PUBLIC INTERFACE STARTS HERE
 
 
-class CompileError(Exception):
-    """ Holds an exception when the C++ compilation failed"""
-
-    def __init__(self, cmdline, output):
-            self.cmdline = _format_cmdline(cmdline)
-            self.output = output
-            self._message = "\n".join(["Compile error!\n",
-                                       "******** Command line was: ********",
-                                       self.cmdline,
-                                       "\n******** Output :  ********\n",
-                                       self.output])
-            super(CompileError, self).__init__(self._message)
-
-
-def cxxflags():
-    """The C++ flags to compile a Pythran generated cpp file"""
-    return (cfg.get('user', 'cxxflags').split() +
-            cfg.get('sys', 'cxxflags').split())
-
-
-def cppflags():
-    """The C++ flags to preprocess a Pythran generated cpp file"""
-    return (_python_cppflags() +
-            _numpy_cppflags() +
-            _pythran_cppflags() +
-            cfg.get('sys', 'cppflags').split() +
-            cfg.get('user', 'cppflags').split())
-
-
-def ldflags():
-    """The linker flags to link a Pythran code into a shared library"""
-    return (_python_ldflags() +
-            cfg.get('sys', 'ldflags').split() +
-            cfg.get('user', 'ldflags').split())
-
-
 def generate_cxx(module_name, code, specs=None, optimizations=None):
     '''python + pythran spec -> c++ code
-    returns a BoostPythonModule object
+    returns a PythonModule object
 
     '''
     pm = PassManager(module_name)
-    # font end
-    ir = ast.parse(code)
 
-    # parse openmp directive
-    pm.apply(GatherOMPData, ir)
-
-    # avoid conflicts with cxx keywords
-    renamings = pm.apply(NormalizeIdentifiers, ir)
-    check_syntax(ir)
+    # front end
+    ir, renamings, docstrings, has_init = frontend.parse(pm, code)
 
     # middle-end
     optimizations = (optimizations or
                      cfg.get('pythran', 'optimizations').split())
-    optimizations = map(_parse_optimization, optimizations)
+    optimizations = [_parse_optimization(opt) for opt in optimizations]
     refine(pm, ir, optimizations)
 
     # back-end
     content = pm.dump(Cxx, ir)
 
-    if not specs:  # Match "None" AND empty specs
-        class Generable:
+    # instanciate the meta program
+    if specs is None:
+
+        class Generable(object):
             def __init__(self, content):
                 self.content = content
 
-            def generate(self):
-                return "\n".join("\n".join(l for l in s.generate())
-                                 for s in self.content)
+            def __str__(self):
+                return str(self.content)
+
+            generate = __str__
+
         mod = Generable(content)
     else:
+
         # uniform typing
         for fname, signatures in specs.items():
             if not isinstance(signatures, tuple):
                 specs[fname] = (signatures,)
 
-        mod = BoostPythonModule(module_name)
-        mod.use_private_namespace = False
-        # very low value for max_arity leads to various bugs
-        max_arity = max(4, max(max(map(len, s)) for s in specs.itervalues()))
-        mod.add_to_preamble([Define("BOOST_PYTHON_MAX_ARITY", max_arity)])
-        mod.add_to_preamble([Define("BOOST_SIMD_NO_STRICT_ALIASING", "1")])
-        mod.add_to_preamble(content)
-        mod.add_to_init([
-            Statement('import_array()'),
-            Statement('boost::python::implicitly_convertible<std::string,'
-                      + 'pythonic::core::string>()')]
-        )
+        # verify the pythran export are compatible with the code
+        specs = expand_specs(specs)
+        check_specs(ir, specs, renamings)
+        specs_to_docstrings(specs, docstrings)
 
-        # topologically sorted exceptions based on the inheritance hierarchy.
-        # needed because otherwise boost python register_exception handlers
-        # do not catch exception type in the right way
-        # (first valid exception is selected)
-        # Inheritance has to be taken into account in the registration order.
-        exceptions = nx.DiGraph()
-        for function_name, v in functions.iteritems():
-            for mname, symbol in v:
-                if isinstance(symbol, ConstExceptionIntr):
-                    exceptions.add_node(
-                        getattr(sys.modules[mname], function_name))
+        metainfo = {'hash': hashlib.sha256(code).hexdigest(),
+                    'version': __version__,
+                    'date': datetime.now()}
 
-        # add edges based on class relationships
-        for n in exceptions:
-            if n.__base__ in exceptions:
-                exceptions.add_edge(n.__base__, n)
-
-        sorted_exceptions = nx.topological_sort(exceptions)
-        mod.add_to_init([
-            Statement(
-                'boost::python::register_exception_translator<' +
-                'pythonic::core::%s>(&translate_%s)' %
-                (n.__name__, n.__name__)) for n in sorted_exceptions])
+        mod = PythonModule(module_name, docstrings, metainfo, has_init)
+        mod.add_to_preamble(Define("BOOST_SIMD_NO_STRICT_ALIASING", "1"))
+        mod.add_to_includes(Include("pythonic/core.hpp"),
+                            Include("pythonic/python/core.hpp"),
+                            # FIXME: only include these when needed
+                            Include("pythonic/types/bool.hpp"),
+                            Include("pythonic/types/int.hpp"),
+                            Line("#ifdef _OPENMP\n#include <omp.h>\n#endif")
+                            )
+        mod.add_to_includes(*[Include(inc) for inc in
+                              _extract_specs_dependencies(specs)])
+        mod.add_to_includes(*content.body)
 
         for function_name, signatures in specs.iteritems():
             internal_func_name = renamings.get(function_name,
@@ -222,14 +185,7 @@ def generate_cxx(module_name, code, specs=None, optimizations=None):
                                                     internal_func_name,
                                                     "<{0}>".format(args_list)
                                                     if has_arguments else "")
-                result_type = ("typename std::remove_reference"
-                               + "<typename {0}::result_type>::type".format(
-                                 specialized_fname))
-                mod.add_to_init(
-                    [Statement("python_to_pythran<{0}>()".format(t))
-                     for t in _extract_all_constructed_types(signature)])
-                mod.add_to_init([Statement(
-                    "pythran_to_python<{0}>()".format(result_type))])
+                result_type = "typename %s::result_type" % specialized_fname
                 mod.add_function(
                     FunctionBody(
                         FunctionDeclaration(
@@ -243,52 +199,60 @@ def generate_cxx(module_name, code, specs=None, optimizations=None):
                                 module_name, internal_func_name),
                             ', '.join(arguments)))])
                     ),
-                    function_name
+                    function_name,
+                    arguments_types
                 )
     return mod
 
 
-def compile_cxxfile(cxxfile, module_so=None, **kwargs):
+def compile_cxxfile(module_name, cxxfile, output_binary=None, **kwargs):
     '''c++ file -> native module
     Return the filename of the produced shared library
     Raises CompileError on failure
 
     '''
-    # FIXME: not sure about overriding the user defined compiler here...
-    compiler = kwargs.get('cxx', cfg.get('user', 'cxx'))
 
-    _cppflags = cppflags() + kwargs.get('cppflags', [])
-    _cxxflags = cxxflags() + kwargs.get('cxxflags', [])
-    _ldflags = ldflags() + kwargs.get('ldflags', [])
+    builddir = mkdtemp()
+    buildtmp = mkdtemp()
 
-    # workaround g++-4.8 bug
+    extension_args = make_extension(**kwargs)
+
+    extension = Extension(module_name,
+                          [cxxfile],
+                          language="c++",
+                          **extension_args)
+
     try:
-        extra_flags = ['-ftrack-macro-expansion=0']
-        check_call([compiler, cxxfile, '-E'] + extra_flags,
-                     stdout=file(devnull), stderr=file(devnull))
-        _cppflags.extend(extra_flags)
-    except CalledProcessError:
-        pass
+        setup(name=module_name,
+              ext_modules=[extension],
+              # fake CLI call
+              script_name='setup.py',
+              script_args=['--verbose'
+                           if logger.isEnabledFor(logging.INFO)
+                           else '--quiet',
+                           'build_ext',
+                           '--build-lib', builddir,
+                           '--build-temp', buildtmp,
+                           ]
+              )
+    except SystemExit as e:
+        raise CompileError(e.args)
 
-    # Get output filename from input filename if not set
-    module_so = module_so or (os.path.splitext(cxxfile)[0] + ".so")
-    try:
-        cmd = ([compiler, cxxfile]
-               + _cppflags
-               + _cxxflags
-               + ["-shared", "-o", module_so]
-               + _ldflags)
-        logger.info("Command line: " + _format_cmdline(cmd))
-        output = check_output(cmd, stderr=STDOUT)
-    except CalledProcessError as e:
-        raise CompileError(e.cmd, e.output)
-    logger.info("Generated module: " + module_so)
-    logger.info("Output: " + output)
+    [target] = glob.glob(os.path.join(builddir, module_name + "*"))
+    if not output_binary:
+        output_binary = os.path.join(os.getcwd(),
+                                     module_name + os.path.splitext(target)[1])
+    shutil.move(target, output_binary)
+    shutil.rmtree(builddir)
+    shutil.rmtree(buildtmp)
 
-    return module_so
+    logger.info("Generated module: " + module_name)
+    logger.info("Output: " + output_binary)
+
+    return output_binary
 
 
-def compile_cxxcode(cxxcode, module_so=None, keep_temp=False,
+def compile_cxxcode(module_name, cxxcode, output_binary=None, keep_temp=False,
                     **kwargs):
     '''c++ code (string) -> temporary file -> native module.
     Returns the generated .so.
@@ -296,19 +260,20 @@ def compile_cxxcode(cxxcode, module_so=None, keep_temp=False,
     '''
 
     # Get a temporary C++ file to compile
-    fd, fdpath = _get_temp(cxxcode)
-    module_so = compile_cxxfile(fdpath, module_so, **kwargs)
+    _, fdpath = _get_temp(cxxcode)
+    output_binary = compile_cxxfile(module_name, fdpath,
+                                    output_binary, **kwargs)
     if not keep_temp:
         # remove tempfile
         os.remove(fdpath)
     else:
         logger.warn("Keeping temporary generated file:" + fdpath)
 
-    return module_so
+    return output_binary
 
 
 def compile_pythrancode(module_name, pythrancode, specs=None,
-                        opts=None, cpponly=False, module_so=None,
+                        opts=None, cpponly=False, output_file=None,
                         **kwargs):
     '''Pythran code (string) -> c++ code -> native module
     Returns the generated .so (or .cpp if `cpponly` is set to true).
@@ -316,49 +281,57 @@ def compile_pythrancode(module_name, pythrancode, specs=None,
     '''
 
     # Autodetect the Pythran spec if not given as parameter
-    from spec import spec_parser
-    specs = spec_parser(pythrancode) if specs is None else specs
+    from pythran.spec import spec_parser
+    if specs is None:
+        specs = spec_parser(pythrancode)
 
-    # Generate C++, get a BoostPythonModule object
+    # Generate C++, get a PythonModule object
     module = generate_cxx(module_name, pythrancode, specs, opts)
 
     if cpponly:
         # User wants only the C++ code
-        _, output_file = _get_temp(str(module.generate()))
-        if module_so:
-            shutil.move(output_file, module_so)
-            output_file = module_so
+        _, tmp_file = _get_temp(str(module))
+        if not output_file:
+            output_file = module_name + ".cpp"
+        shutil.move(tmp_file, output_file)
         logger.info("Generated C++ source file: " + output_file)
     else:
         # Compile to binary
-        output_file = compile_cxxcode(str(module.generate()),
-                                      module_so=module_so,
+        output_file = compile_cxxcode(module_name,
+                                      str(module.generate()),
+                                      output_binary=output_file,
                                       **kwargs)
 
     return output_file
 
 
-def compile_pythranfile(file_path, module_so=None, module_name=None,
+def compile_pythranfile(file_path, output_file=None, module_name=None,
                         cpponly=False, **kwargs):
-    '''Pythran file -> c++ file -> native module
+    """
+    Pythran file -> c++ file -> native module.
+
     Returns the generated .so (or .cpp if `cpponly` is set to true).
 
-    '''
-    if not module_so:
+    """
+    if not output_file:
         # derive module name from input file name
-        basedir, basename = os.path.split(file_path)
+        _, basename = os.path.split(file_path)
         module_name = module_name or os.path.splitext(basename)[0]
 
-        # derive destination from file name
-        module_so = os.path.join(basedir, module_name + ".so")
     else:
-        # derive module name from destination module_so name
-        _, basename = os.path.split(module_so)
+        # derive module name from destination output_file name
+        _, basename = os.path.split(output_file)
         module_name = module_name or os.path.splitext(basename)[0]
 
-    dl = compile_pythrancode(module_name, file(file_path).read(),
-                             module_so=module_so, cpponly=cpponly, **kwargs)
-    return module_so
+    # Add compiled module path to search for imported modules
+    sys.path.append(os.path.dirname(file_path))
+
+    output_file = compile_pythrancode(module_name, file(file_path).read(),
+                                      output_file=output_file,
+                                      cpponly=cpponly,
+                                      **kwargs)
+
+    return output_file
 
 
 def test_compile():
@@ -366,8 +339,10 @@ def test_compile():
     May raises CompileError Exception.
 
     '''
-    module_so = compile_cxxcode("\n".join([
-        "#define BOOST_PYTHON_MAX_ARITY 4",
-        "#include <pythran/pythran.h>"
-        ]))
-    module_so and os.remove(module_so)
+    code = '''
+        #define BOOST_PYTHON_MAX_ARITY 4
+        #include <pythonic/core.hpp>
+    '''
+
+    output_file = compile_cxxcode('test', code)
+    output_file and os.remove(output_file)

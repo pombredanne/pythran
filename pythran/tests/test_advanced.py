@@ -7,9 +7,9 @@ class TestAdvanced(TestEnv):
         code = '''
 def dummy_generator(l):
     for i in l: yield i
-def generator_enumeration():
-    return [i for i in enumerate(dummy_generator(range(2,10)))]'''
-        self.run_test(code, generator_enumeration=[])
+def generator_enumeration(begin, end):
+    return [i for i in enumerate(dummy_generator(range(begin,end)))]'''
+        self.run_test(code, 2, 10, generator_enumeration=[int, int])
 
     def test_augassign_floordiv(self):
         self.run_test("def augassign_floordiv(i,j): k=i ; k//=j; return k",
@@ -20,7 +20,7 @@ def generator_enumeration():
                 [1.5, 2.5], builtin_constructors=[[float]])
 
     def test_tuple_sum(self):
-        self.run_test("def tuple_sum(): return sum((1,2,3.5))", tuple_sum=[])
+        self.run_test("def tuple_sum(tpl): return sum(tpl)", (1, 2, 3.5), tuple_sum=[(int, int, float)])
 
     def test_minus_unary_minus(self):
         self.run_test("def minus_unary_minus(a): return a - -1", 1, minus_unary_minus=[int])
@@ -61,7 +61,7 @@ def bool_op_casting():
         self.run_test('def zip_on_generator(n): return zip((i for i in xrange(n)), (i*2 for i in xrange(1,n+1)))', 5, zip_on_generator=[int])
 
     def test_parallel_enumerate(self):
-        self.run_test('def parallel_enumerate(l):\n k = [0]*(len(l) + 1)\n "omp parallel for private(i,j)"\n for i,j in enumerate(l):\n  k[i+1] = j\n return k', range(1000), parallel_enumerate=[[int]])
+        self.run_test('def parallel_enumerate(l):\n k = [0]*(len(l) + 1)\n "omp parallel for"\n for i,j in enumerate(l):\n  k[i+1] = j\n return k', range(1000), parallel_enumerate=[[int]])
 
     def test_ultra_nested_functions(self):
         code = '''
@@ -71,7 +71,7 @@ def ultra_nested_function(n):
 		return bar(y)
 	return foo(n)'''
         self.run_test(code, 42, ultra_nested_function=[int])
-        
+
     def test_generator_sum(self):
         code = '''
 def generator_sum(l0,l1):
@@ -87,23 +87,23 @@ def generator_sum(l0,l1):
     def test_tuple_unpacking_in_generator(self):
         code = '''
 def foo(l):
-    a,b= 1,0
+    a, b = 1,0
     yield a
     yield b
-def tuple_unpacking_in_generator():
-    f = foo(range(10))
+def tuple_unpacking_in_generator(n):
+    f = foo(range(n))
     return 0 in f'''
-        self.run_test(code, tuple_unpacking_in_generator=[])
+        self.run_test(code, 10, tuple_unpacking_in_generator=[int])
 
     def test_loop_tuple_unpacking_in_generator(self):
         code= '''
 def foo(l):
     for i,j in enumerate(l):
         yield i,j
-def loop_tuple_unpacking_in_generator():
-    f = foo(range(10))
+def loop_tuple_unpacking_in_generator(n):
+    f = foo(range(n))
     return (0,0) in f'''
-        self.run_test(code, loop_tuple_unpacking_in_generator=[])
+        self.run_test(code, 10, loop_tuple_unpacking_in_generator=[int])
 
     def test_assign_in_except(self):
         code = '''
@@ -137,7 +137,7 @@ def combiner_on_empty_list():
         self.run_test('def map(): return 5', map=[])
 
     def test_multiple_compares(self):
-        self.run_test('def multiple_compares(x): return 1 < x <2, 1< x+1 < 2', 0.5, multiple_compares=[float])
+        self.run_test('def multiple_compares(x): return 1 < x < 2, 1 < x + 1 < 2', 0.5, multiple_compares=[float])
 
     def test_default_arg0(self):
         self.run_test('def default_arg0(n=12): return n', default_arg0=[])
@@ -157,3 +157,45 @@ def combiner_on_empty_list():
     @skip("lists as zeros parameter are not supported")
     def test_list_as_zeros_parameter(self):
         self.run_test('def list_as_zeros_parameter(n): from numpy import zeros ; return zeros([n,n])', 3, list_as_zeros_parameter=[int])
+
+    def test_add_arrays(self):
+        self.run_test('def add_arrays(s): return (s,s) + (s,)', 1, add_arrays=[int])
+
+    def test_tuple_to_tuple(self):
+        self.run_test('def tuple_to_tuple(t): return tuple((1, t))',
+                      '2',
+                      tuple_to_tuple=[str])
+
+    def test_array_to_tuple(self):
+        self.run_test('def array_to_tuple(t): return tuple((1, t))',
+                      2,
+                      array_to_tuple=[int])
+
+    def test_list_to_tuple(self):
+        self.run_test('def list_to_tuple(t): return tuple([1, t])',
+                      2,
+                      list_to_tuple=[int])
+
+    def test_print_intrinsic(self):
+        self.run_test('def print_intrinsic(): print(len)',
+                      print_intrinsic=[])
+
+    def test_function_redefinition(self):
+        code = 'def function_redefinition(x):pass\ndef function_redefinition():pass'
+        with self.assertRaises(SyntaxError):
+            self.run_test(code, function_redefinition=[])
+
+    def test_invalid_call0(self):
+        code = 'def foo(x):pass\ndef invalid_call0(): return foo()'
+        with self.assertRaises(SyntaxError):
+            self.run_test(code, invalid_call0=[])
+
+    def test_invalid_call1(self):
+        code = 'def foo(x=1):pass\ndef invalid_call1(l): return foo(l,l)'
+        with self.assertRaises(SyntaxError):
+            self.run_test(code, 1, invalid_call1=[int])
+
+    def test_invalid_call2(self):
+        code = 'def foo(x):pass\ndef bar():pass\ndef invalid_call2(l): return (foo if l else bar)(l)'
+        with self.assertRaises(SyntaxError):
+            self.run_test(code, 1, invalid_call2=[int])

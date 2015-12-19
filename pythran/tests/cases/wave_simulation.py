@@ -1,5 +1,6 @@
 # from https://github.com/sklam/numba-example-wavephysics
 #runas test(50)
+#bench test(55000)
 import numpy as np
 from math import ceil
 
@@ -23,14 +24,14 @@ def physics(masspoints, dt, plunk, which):
     fvec = np.array([fmag * cosine, fmag * sine])
     force[i - 1] -= fvec
     force[i] += fvec
- 
+
   force[0] = force[-1] = 0, 0
   force[which][1] += plunk
   accel = force / MASS
- 
+
   # verlet integration
   npos = (2 - DAMPING) * cpos - (1 - DAMPING) * ppos + accel * (dt**2)
- 
+
   masspoints[1] = cpos
   masspoints[0] = npos
 

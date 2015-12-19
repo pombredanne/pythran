@@ -10,28 +10,35 @@ This package provides several entry points
        * test_compile: passthrough compile test, raises CompileError Exception.
 
 Basic scenario is to turn a Python AST into C++ code:
->>> from ast import parse
 >>> code = "def foo(x): return x * 2"
->>> tree = parse(code)
->>> cxx = generate_cxx('my_module', tree) # gets a BoostPythonModule
->>> print cxx.generate()
+>>> cxx_generator = generate_cxx('my_module', code) # gets a BoostPythonModule
+>>> cxx = cxx_generator.generate()
 
 To generate a native module, one need to add type information:
->>> cxx = generate_cxx('my_module', tree, {'foo':([[int]],)})
+>>> cxx = generate_cxx('my_module', code, {'foo':([[int]],)})
 
 Eventually, the type information can be translated from a string:
 >>> spec = spec_parser('#pythran export foo(int list)')
->>> cxx = generate_cxx('my_module', tree, spec)
+>>> cxx = generate_cxx('my_module', code, spec)
 
-Higher level entry points includes:
->>> dll_file = compile_pythranfile("my_python_file.py")
->>> cpp_file = compile_pythranfile("my_python_file.py",cpponly=True)
->>> dll_file = compile_pythrancode("... /* python code here */ ...")
->>> dll_file = compile_cxxfile("my_cpp_file.cpp"):
+Higher level entry points include:
+>>> open('my_module.py', 'w').write(code)
+>>> dll_file = compile_pythranfile("my_module.py")
+>>> cpp_file = compile_pythranfile("my_module.py",cpponly=True)
+>>> dll_file = compile_pythrancode("my_module", code)
+>>> dll_file = compile_cxxfile("my_module", cpp_file)
+
+Cleanup
+>>> import os, glob
+>>> for target in glob.glob('my_module.*'):
+...     os.remove(target)
 
 '''
 
-from toolchain import (generate_cxx, compile_cxxfile, compile_cxxcode,
-                       compile_pythrancode, compile_pythranfile, test_compile,
-                       CompileError)
-from spec import spec_parser
+import pythran.log
+from pythran.toolchain import (generate_cxx, compile_cxxfile, compile_cxxcode,
+                               compile_pythrancode, compile_pythranfile,
+                               test_compile)
+from pythran.spec import spec_parser
+from pythran.dist import PythranExtension
+from pythran.version import __version__

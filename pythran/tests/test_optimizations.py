@@ -1,7 +1,16 @@
 from test_env import TestEnv
+import pythran
 
+class TestOptimization(TestEnv):
 
-class TestBase(TestEnv):
+    def test_constant_fold_nan(self):
+        code = "def constant_fold_nan(a): from numpy import nan; a[0] = nan; return a"
+        self.run_test(code, [1., 2.], constant_fold_nan=[[float]])
+
+    def test_constant_fold_divide_by_zero(self):
+        code = "def constant_fold_divide_by_zero(): return 1/0"
+        with self.assertRaises(pythran.syntax.PythranSyntaxError):
+            self.check_ast(code, "syntax error anyway", ["pythran.optimizations.ConstantFolding"])
 
     def test_genexp(self):
         self.run_test("def test_genexp(n): return sum((x*x for x in xrange(n)))", 5, test_genexp=[int])
@@ -22,26 +31,26 @@ class TestBase(TestEnv):
         self.run_test("""
 def foo(f,l):
     return map(f,l[1:])
-def alias_readonce(n): 
+def alias_readonce(n):
     map = foo
     return map(lambda (x,y): x*y < 50, zip(xrange(n), xrange(n)))
-""", 10, alias_readonce=[int]) 
+""", 10, alias_readonce=[int])
 
     def test_replace_aliased_map(self):
         self.run_test("""
-def alias_replaced(n): 
+def alias_replaced(n):
     map = filter
     return list(map(lambda x : x < 5, xrange(n)))
-""", 10, alias_replaced=[int]) 
+""", 10, alias_replaced=[int])
 
     def test_listcomptomap_alias(self):
         self.run_test("""
 def foo(f,l):
     return map(f,l[3:])
-def listcomptomap_alias(n): 
+def listcomptomap_alias(n):
     map = foo
     return list([x for x in xrange(n)])
-""", 10, listcomptomap_alias=[int]) 
+""", 10, listcomptomap_alias=[int])
 
     def test_readonce_return(self):
         self.run_test("""
@@ -166,7 +175,7 @@ def foo(l,n):
         return foo(l,n+1)
     else:
         return sum(l)
-def readonce_recursive(n): 
+def readonce_recursive(n):
     return foo(range(n),0)
 """, 5, readonce_recursive=[int])
 
@@ -177,7 +186,7 @@ def foo(l,n):
         return foo(l,n+1)
     else:
         return sum(l[1:])
-def readonce_recursive2(n): 
+def readonce_recursive2(n):
     return foo(range(n),0)
 """, 5, readonce_recursive2=[int])
 
@@ -190,7 +199,7 @@ def foo(l,n):
         return sum(l)
 def bar(l,n):
     return foo(l, n+1)
-def readonce_cycle(n): 
+def readonce_cycle(n):
     return foo(range(n),0)
 """, 5, readonce_cycle=[int])
 
@@ -203,14 +212,170 @@ def foo(l,n):
         return sum(l)
 def bar(l,n):
     return foo(l, n+1)
-def readonce_cycle2(n): 
+def readonce_cycle2(n):
     return foo(range(n),0)
 """, 5, readonce_cycle2=[int])
 
+    def test_omp_forwarding(self):
+        init = """
+def foo():
+    a = 2
+    #omp parallel
+    if 1:
+        print a
+"""
+        ref = """import itertools
+def foo():
+    a = 2
+    'omp parallel'
+    if 1:
+        print a
+    return __builtin__.None"""
+        self.check_ast(init, ref, ["pythran.optimizations.ForwardSubstitution"])
+
+    def test_omp_forwarding2(self):
+        init = """
+def foo():
+    #omp parallel
+    if 1:
+        a = 2
+        print a
+"""
+        ref = """import itertools
+def foo():
+    'omp parallel'
+    if 1:
+        pass
+        print 2
+    return __builtin__.None"""
+        self.check_ast(init, ref, ["pythran.optimizations.ForwardSubstitution"])
+
+    def test_omp_forwarding3(self):
+        init = """
+def foo():
+    #omp parallel
+    if 1:
+        a = 2
+    print a
+"""
+        ref = """import itertools
+def foo():
+    'omp parallel'
+    if 1:
+        a = 2
+    print a
+    return __builtin__.None"""
+        self.check_ast(init, ref, ["pythran.optimizations.ForwardSubstitution"])
+
     def test_full_unroll0(self):
-        self.run_test("""
+        init = """
 def full_unroll0():
     k = []
     for i,j in zip([1,2,3],[4,5,6]): k.append((i,j))
-    return k""", full_unroll0=[])
+    return k"""
 
+        ref = '''import itertools
+def full_unroll0():
+    k = []
+    __tuple0 = (1, 4)
+    j = __tuple0[1]
+    i = __tuple0[0]
+    __builtin__.list.append(k, (i, j))
+    __tuple0 = (2, 5)
+    j = __tuple0[1]
+    i = __tuple0[0]
+    __builtin__.list.append(k, (i, j))
+    __tuple0 = (3, 6)
+    j = __tuple0[1]
+    i = __tuple0[0]
+    __builtin__.list.append(k, (i, j))
+    return k'''
+
+        self.check_ast(init, ref, ["pythran.optimizations.ConstantFolding", "pythran.optimizations.LoopFullUnrolling"])
+
+
+    def test_full_unroll1(self):
+        self.run_test("""
+def full_unroll1():
+    c = 0
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                for l in range(3):
+                    for m in range(3):
+                        c += 1
+    return c""", full_unroll1=[])
+
+    def test_deadcodeelimination(self):
+        init = """
+def bar(a):
+    print a
+    return 10
+def foo(a):
+    if 1 < bar(a):
+        b = 2
+    return b"""
+        ref = """import itertools
+def bar(a):
+    print a
+    return 10
+def foo(a):
+    (1 < bar(a))
+    return 2"""
+        self.check_ast(init, ref, ["pythran.optimizations.ForwardSubstitution", "pythran.optimizations.DeadCodeElimination"])
+
+    def test_deadcodeelimination2(self):
+        init = """
+def foo(a):
+    if 1 < max(a, 2):
+        b = 2
+    return b"""
+        ref = """import itertools
+def foo(a):
+    pass
+    return 2"""
+        self.check_ast(init, ref, ["pythran.optimizations.ForwardSubstitution", "pythran.optimizations.DeadCodeElimination"])
+
+    def test_deadcodeelimination3(self):
+        init = """
+def bar(a):
+    return a
+def foo(a):
+    "omp flush"
+    bar(a)
+    return 2"""
+        ref = """import itertools
+def bar(a):
+    return a
+def foo(a):
+    'omp flush'
+    pass
+    return 2"""
+        self.check_ast(init, ref, ["pythran.optimizations.DeadCodeElimination"])
+
+    def test_patternmatching(self):
+        init = """
+def foo(a):
+    return len(set(range(len(set(a)))))"""
+        ref = """import itertools
+def foo(a):
+    return __builtin__.pythran.len_set(__builtin__.range(__builtin__.pythran.len_set(a)))"""
+        self.check_ast(init, ref, ["pythran.optimizations.PatternTransform"])
+
+    def test_patternmatching2(self):
+        init = """
+def foo(a):
+    return reversed(xrange(len(set(a))))"""
+        ref = """import itertools
+def foo(a):
+    return __builtin__.xrange((__builtin__.pythran.len_set(a) - 1), (-1), (-1))"""
+        self.check_ast(init, ref, ["pythran.optimizations.PatternTransform"])
+
+    def test_patternmatching3(self):
+        init = """
+def foo(a):
+    return a * a"""
+        ref = """import itertools
+def foo(a):
+    return (a ** 2)"""
+        self.check_ast(init, ref, ["pythran.optimizations.PatternTransform"])

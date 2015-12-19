@@ -1,28 +1,27 @@
-'''
-This module turns a python AST into an optimized, pythran compatible ast
-'''
+"""This module turns a python AST into an optimized, pythran compatible ast."""
 
-from passes import RemoveLambdas, NormalizeTuples, NormalizeReturn
-from passes import UnshadowParameters, NormalizeException, ExpandBuiltins
-from passes import NormalizeMethodCalls, NormalizeAttributes, FalsePolymorphism
-from passes import RemoveComprehension, RemoveNestedFunctions, ExpandImports
-from passes import NormalizeCompare, ExpandImportAll
-from optimizations import GenExpToImap, ListCompToMap, ListCompToGenexp, Pow2
+from pythran.analyses import ExtendedSyntaxCheck
+from pythran.optimizations import GenExpToImap, ListCompToMap, ListCompToGenexp
+from pythran.transformations import (ExpandBuiltins, ExpandImports,
+                                     ExpandImportAll, FalsePolymorphism,
+                                     NormalizeCompare, NormalizeException,
+                                     NormalizeMethodCalls, NormalizeReturn,
+                                     NormalizeTuples, RemoveComprehension,
+                                     RemoveNestedFunctions, RemoveLambdas,
+                                     UnshadowParameters, RemoveNamedArguments)
 
 
 def refine(pm, node, optimizations):
-    """refine node in place until it matches pythran's expectations"""
-
-    # sanitize input
+    """ Refine node in place until it matches pythran's expectations. """
+    # Sanitize input
     pm.apply(ExpandImportAll, node)
     pm.apply(NormalizeTuples, node)
     pm.apply(ExpandBuiltins, node)
     pm.apply(ExpandImports, node)
     pm.apply(NormalizeException, node)
     pm.apply(NormalizeMethodCalls, node)
-    pm.apply(NormalizeAttributes, node)
 
-    #Some early optimizations
+    # Some early optimizations
     pm.apply(ListCompToMap, node)
     pm.apply(GenExpToImap, node)
 
@@ -30,8 +29,10 @@ def refine(pm, node, optimizations):
     pm.apply(RemoveLambdas, node)
     pm.apply(NormalizeCompare, node)
     pm.apply(RemoveNestedFunctions, node)
+    pm.gather(ExtendedSyntaxCheck, node)
     pm.apply(ListCompToGenexp, node)
     pm.apply(RemoveComprehension, node)
+    pm.apply(RemoveNamedArguments, node)
 
     # sanitize input
     pm.apply(NormalizeTuples, node)
@@ -41,5 +42,8 @@ def refine(pm, node, optimizations):
     pm.apply(FalsePolymorphism, node)
 
     # some extra optimizations
-    for optimization in optimizations:
-        pm.apply(optimization, node)
+    apply_optimisation = True
+    while apply_optimisation:
+        apply_optimisation = False
+        for optimization in optimizations:
+            apply_optimisation |= pm.apply(optimization, node)[0]

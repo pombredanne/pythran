@@ -1,4 +1,6 @@
 #from http://rosettacode.org/wiki/Read_entire_file#Python
+#pythran export readfile()
+#runas readfile()
 
-def test():
-    return open("read_conf.cfg").read()
+def readfile():
+    return open("pythran/tests/rosetta/read_conf.cfg").read()

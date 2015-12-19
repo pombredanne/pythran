@@ -1,6 +1,8 @@
 import unittest
 from test_env import TestEnv
 
+
+@TestEnv.module
 class TestOperator(TestEnv):
 
     def test_lt(self):
@@ -53,6 +55,9 @@ class TestOperator(TestEnv):
 
     def test_is_not(self):
         self.run_test("def is_not(a,b):\n from operator import is_not\n return is_not(a,b)", 1, 2, is_not=[int,int])
+
+    def test_abs(self):
+        self.run_test("def abs(a):\n from operator import abs\n return abs(a)", -2j + 2, abs=[complex])
 
     def test___abs__(self):
         self.run_test("def __abs__(a):\n from operator import __abs__\n return __abs__(a)", -2, __abs__=[int])
@@ -146,6 +151,9 @@ class TestOperator(TestEnv):
 
     def test___truediv__(self):
         self.run_test("def __truediv__(a,b):\n from operator import __truediv__\n return __truediv__(a,b)", 5, 2, __truediv__=[int,int])
+
+    def test_xor(self):
+        self.run_test("def xor(a,b):\n from operator import xor\n return xor(a,b)", 0x02, 0x01, xor=[int,int])
 
     def test___xor__(self):
         self.run_test("def __xor__(a,b):\n from operator import __xor__\n return __xor__(a,b)", 0x02, 0x01, __xor__=[int,int])
@@ -312,9 +320,12 @@ class TestOperator(TestEnv):
 
     def test_indexOf(self):
         self.run_test("def indexOf(a,b):\n from operator import indexOf\n return indexOf(a,b)", [4,3,2,1], 4, indexOf=[[int],int])
+
     def test_itemgetter(self):
         self.run_test("def itemgetter(i,a):\n from operator import itemgetter\n g = itemgetter(i)\n return g(a)", 2, [4,3,2,1], itemgetter=[int,[int]])
+
     def test_itemgetter2(self):
        self.run_test("def foo():\n from operator import itemgetter\n g = itemgetter(1)", foo=[])
+
     def test_itemgetter3(self):
         self.run_test("def itemgetter3(i,j,k,a):\n from operator import itemgetter\n g = itemgetter(i,j,k)\n return g(a)", 2, 3, 4, [4,3,2,1,0], itemgetter3=[int,int,int,[int]])

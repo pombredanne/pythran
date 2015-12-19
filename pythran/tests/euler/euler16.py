@@ -1,6 +1,9 @@
-#runas solve()
-#pythran export solve()
-def solve():
+# unittest.gmp.skip
+# runas solve(1000)
+# pythran export solve(int)
+
+
+def solve(pow2):
     def digits(n):
         s = 0
         while n > 0:
@@ -8,5 +11,4 @@ def solve():
             n = n / 10
         return s
 
-    return digits(pow(2,1000))
-
+    return digits(pow(2L, pow2))

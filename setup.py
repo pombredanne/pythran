@@ -1,237 +1,201 @@
-from distutils.core import setup, Command
-from distutils.command.build import build
-from unittest import TextTestRunner, TestLoader
-import os
-import sys
-import shutil
+from __future__ import print_function
+
+# Preliminary checks that cannot be done by setuptools
+# like... the setuptools dependency itself!
+try:
+    import setuptools
+except ImportError:
+    print()
+    print("*****************************************************")
+    print("* Setuptools must be installed before running setup *")
+    print("*****************************************************")
+    print()
+    raise
+
+# See https://gist.github.com/kejbaly2/71517b08536776399198
+# Turns out installing numpy as a dep with setuptools is tricky
+try:
+    import numpy
+except ImportError:
+    print()
+    print("******************************************************************")
+    print("* Numpy must be installed before running setup, sorry about this *")
+    print("******************************************************************")
+    print()
+    raise
+
+from setuptools.command.build_py import build_py
+from setuptools import setup
+from distutils import ccompiler
+from setuptools.command.test import test as TestCommand
 from subprocess import check_call
 
+import logging
+import glob
+import os
+import re
+import shutil
+from tempfile import NamedTemporaryFile
+import sys
 
-def _exclude_current_dir_from_import():
-    """ Prevents Python loading from current directory, so that
-    `import pythran` lookup the PYTHONPATH.
+# It appears old versions of setuptools are not supported, see
+#   https://github.com/serge-sans-paille/pythran/issues/489
 
-    Returns current_dir
+from distutils.version import LooseVersion
+MinimalSetuptoolsVersion = LooseVersion("12.0.5")
+if LooseVersion(setuptools.__version__) < MinimalSetuptoolsVersion:
+    msg = "Setuptools version is {}, but must be at least {}".format(
+        setuptools.__version__,
+        MinimalSetuptoolsVersion)
+    print()
+    print("*" * (len(msg) + 4))
+    print("*", msg, "*")
+    print("*" * (len(msg) + 4))
+    print()
+    raise ImportError("setuptools")
+
+
+logger = logging.getLogger("pythran")
+logger.addHandler(logging.StreamHandler())
+
+versionfile = os.path.join('pythran', 'version.py')
+exec(open(versionfile).read())
+
+
+class PyTest(TestCommand):
+    user_options = [('pytest-args=', 'a', "Arguments to pass to py.test")]
+
+    def initialize_options(self):
+        TestCommand.initialize_options(self)
+        self.pytest_args = []
+
+    def finalize_options(self):
+        TestCommand.finalize_options(self)
+        self.test_args = ['--pep8']
+        self.test_suite = True
+
+    def run_tests(self):
+        # import here, cause outside the eggs aren't loaded
+        import pytest
+        sys.path.append(os.getcwd())
+        errno = pytest.main(self.pytest_args)
+        sys.exit(errno)
+
+
+class BuildWithThirdParty(build_py):
 
     """
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    sys.path = filter(lambda p: p != current_dir, sys.path)
-    return current_dir
+    Set up Pythran dependencies.
 
+    * install nt2
+    * install boost.simd
+    * install boost dependencies
+    """
 
-class BuildWithPly(build):
-    '''Use ply to generate parsetab before building module.'''
+    def copy_nt2(self):
+        """ Install NT2 and boost deps from the third_party directory """
 
-    def build_ply(self):
-        from pythran.spec import SpecParser
-        SpecParser()  # this forces the generation of the parsetab file
-        self.mkpath(os.path.join(self.build_lib, 'pythran'))
-        for p in ('parsetab.py',):
-            target = os.path.join(self.build_lib, 'pythran', p)
-            if os.path.exists(p):
-                os.rename(p, target)
-            assert os.path.exists(target)
-
-    def build_nt2(self):
-        nt2_dir = 'nt2'
-        if not os.path.isdir(nt2_dir):
-            print 'nt2 git repository not setup, cloning it'
-            cmd = 'git clone https://github.com/MetaScale/nt2.git -b release'
-            check_call(cmd.split())
-            # retreive previous nt2 release
-            os.chdir('nt2')
-            check_call('git reset --hard 9024abe687'.split())
-            os.chdir('..')
-
-        nt2_build_dir = os.path.join(self.build_temp, nt2_dir)
-        if not os.path.isdir(nt2_build_dir):
-            os.makedirs(nt2_build_dir)
-
-        if not os.path.exists(os.path.join(nt2_build_dir, 'Makefile')):
-            print 'nt2 not already configured, configuring it'
-
-            cwd = os.getcwd()
-            abs_nt2_dir = os.path.join(cwd, nt2_dir)
-            os.chdir(nt2_build_dir)
-            build_cmd = ['cmake',
-                         abs_nt2_dir,
-                         '-DCMAKE_INSTALL_PREFIX=.',
-                         '-DNT2_FIND_REPOSITORIES='
-                         'git://github.com/MetaScale/nt2-modules.git']
-            check_call(build_cmd)
-            os.chdir(cwd)
-
-        check_call(['make', '-C', nt2_build_dir, 'install', '-j'])
+        print('Copying nt2 and its dependencies')
         for d in ('nt2', 'boost'):
-            src = os.path.join(nt2_build_dir, 'include', d)
+            src = os.path.join('third_party', d)
+
+            # copy to the build tree
             target = os.path.join(self.build_lib, 'pythran', d)
             shutil.rmtree(target, True)
             shutil.copytree(src, target)
 
-    def run(self, *args, **kwargs):
-        if not self.dry_run:  # compatibility with the parent options
-            self.build_ply()
-            self.build_nt2()
-        # regular build done by patent class
-        build.run(self, *args, **kwargs)
+            # copy them to the source tree too, needed for sdist
+            target = os.path.join('pythran', d)
+            shutil.rmtree(target, True)
+            shutil.copytree(src, target)
 
+    def detect_gmp(self):
+        # It's far from perfect, but we try to compile a code that uses
+        # Python long. If it fails, _whatever the reason_ we just disable gmp
+        print('Trying to compile GMP dependencies.')
 
-class TestCommand(Command):
-    '''Scan the test directory for any tests, and run them.'''
-
-    description = 'run the test suite for the package'
-    user_options = [('failfast', None, 'Stop upon first fail'),
-                    ('cov', None, 'Perform coverage analysis')]
-
-    def initialize_options(self):
-        self.failfast = False
-        self.cov = False
-
-    def finalize_options(self):
-        pass
-
-    def run(self):
-        # Do not include current directory, validate using installed pythran
-        current_dir = _exclude_current_dir_from_import()
-        os.chdir("pythran/tests")
-        where = os.path.join(current_dir, 'pythran', 'tests')
-
-        from pythran import test_compile
-        test_compile()
-
+        cc = ccompiler.new_compiler(verbose=False)
+        # try to compile a code that requires gmp support
+        with NamedTemporaryFile(suffix='.cpp', delete=False) as temp:
+            temp.write('''
+                #include <gmpxx.h>
+                int main() {
+                    mpz_class a(1);
+                    return a == 0;
+                };
+            '''.encode('ascii'))
+            srcs = [temp.name]
+        exe = "a.out"
         try:
-            import py
-            import xdist
-            import multiprocessing
-            cpu_count = multiprocessing.cpu_count()
-            args = ["-n", str(cpu_count), where]
-            if self.failfast:
-                args.insert(0, '-x')
-            if self.cov:
-                try:
-                    import pytest_cov
-                    args = ["--cov-report", "html",
-                            "--cov-report", "annotate",
-                            "--cov", "pythran"] + args
-                except ImportError:
-                    print ("W: Skipping coverage analysis, pytest_cov"
-                           "not found")
-            if py.test.cmdline.main(args) == 0:
-                print "\\_o<"
-        except ImportError:
-            print ("W: Using only one thread, "
-                   "try to install pytest-xdist package")
-            loader = TestLoader()
-            t = TextTestRunner(failfast=self.failfast)
-            t.run(loader.discover(where))
-            if t.wasSuccessful():
-                print "\\_o<"
+            objs = cc.compile(srcs)
+            cc.link(ccompiler.CCompiler.EXECUTABLE,
+                    objs, exe,
+                    libraries=['gmp', 'gmpxx'])
+        except Exception:
+            # failure: remove the gmp dependency
+            print('Failed to compile GMP source, disabling long support.')
+            for cfg in glob.glob(os.path.join(pythrandir, "pythran-*.cfg")):
+                with open(cfg, "r+") as cfg:
+                    content = cfg.read()
+                    content = content.replace('USE_GMP', '')
+                    content = content.replace('gmp gmpxx', '')
+                    cfg.seek(0)
+                    cfg.write(content)
+        map(os.remove, objs + srcs + [exe])
+
+    def run(self, *args, **kwargs):
+        # regular build done by parent class
+        build_py.run(self, *args, **kwargs)
+        if not self.dry_run:  # compatibility with the parent options
+            self.detect_gmp()
+            self.copy_nt2()
 
 
-class BenchmarkCommand(Command):
-    '''Scan the test directory for any runnable test, and benchmark them.'''
+# Cannot use glob here, as the files may not be generated yet
+nt2_headers = (['nt2/' + '*/' * i + '*.hpp' for i in range(1, 20)] +
+               ['boost/' + '*/' * i + '*.hpp' for i in range(1, 20)])
+pythonic_headers = ['*/' * i + '*.hpp' for i in range(9)] + ['patch/*']
 
-    default_nb_iter = 11
-    description = 'run the benchmark suite for the package'
-    user_options = [
-        ('nb-iter=', None,
-         'number of times the benchmark is run'
-         '(default={0})'.format(default_nb_iter)),
-        ('mode=', None,
-         'mode to use (cpython, pythran, pythran' '+omp)')
-    ]
-
-    runas_marker = '#runas '
-
-    def __init__(self, *args, **kwargs):
-        Command.__init__(self, *args, **kwargs)
-
-    def initialize_options(self):
-        self.nb_iter = BenchmarkCommand.default_nb_iter
-        self.parallel = False
-        self.mode = "pythran"
-
-    def finalize_options(self):
-        self.nb_iter = int(self.nb_iter)
-
-    def run(self):
-        import glob
-        import timeit
-
-        # Do not include current directory, validate using installed pythran
-        current_dir = _exclude_current_dir_from_import()
-        os.chdir("pythran/tests")
-        where = os.path.join(current_dir, 'pythran', 'tests', 'cases')
-
-        from pythran import test_compile, compile_pythranfile
-        test_compile()
-
-        candidates = glob.glob(os.path.join(where, '*.py'))
-        sys.path.append(where)
-        median = lambda x: sorted(x)[len(x) / 2]
-        for candidate in candidates:
-            with file(candidate) as content:
-                runas = [line for line in content.readlines()
-                         if line.startswith(BenchmarkCommand.runas_marker)]
-                if runas:
-                    modname, _ = os.path.splitext(os.path.basename(candidate))
-                    runas_commands = runas[0].replace(
-                        BenchmarkCommand.runas_marker, '').split(";")
-                    runas_context = ";".join(["import {0}".format(
-                        modname)] + runas_commands[:-1])
-                    runas_command = modname + '.' + runas_commands[-1]
-
-                    # cleaning
-                    sopath = os.path.splitext(candidate)[0] + ".so"
-                    if os.path.exists(sopath):
-                        os.remove(sopath)
-
-                    ti = timeit.Timer(runas_command, runas_context)
-
-                    # pythran part
-                    if self.mode.startswith('pythran'):
-                        cxxflags = ["-Ofast", "-DNDEBUG"]
-                        if self.mode == "pythran+omp":
-                            cxxflags.append("-fopenmp")
-                        compile_pythranfile(candidate,
-                                            cxxflags=cxxflags)
-
-                    print modname + " running ...",
-                    sys.stdout.flush()
-                    timing = median(ti.repeat(self.nb_iter, number=1))
-                    print timing
-                else:
-                    print "* Skip '" + candidate + ', no #runas directive'
-
+# rename pythran into pythran3 for python3 version
+if sys.version_info[0] == 3:
+    pythran_cmd = 'pythran3'
+else:
+    pythran_cmd = 'pythran'
 
 setup(name='pythran',
-      version='0.3.0',
-      description='a claimless python to c++ converter',
+      version=__version__,
+      description=__descr__,
       author='Serge Guelton',
       author_email='serge.guelton@telecom-bretagne.eu',
-      url='https://github.com/serge-sans-paille/pythran',
-      packages=['pythran', 'omp', 'pythran/pythonic++'],
-      package_data={'pythran': ['pythran.h', 'pythran_gmp.h', 'pythran.cfg'],
-                    'pythran/pythonic++': ['pythonic++.h', 'core/*.h',
-                                           'modules/*.h']},
-      scripts=['scripts/pythran'],
+      url=__url__,
+      packages=['pythran', 'pythran.analyses', 'pythran.transformations',
+                'pythran.optimizations', 'omp', 'pythran/pythonic',
+                'pythran.types'],
+      package_data={'pythran': ['pythran*.cfg'] + nt2_headers,
+                    'pythran/pythonic': pythonic_headers},
       classifiers=[
-      'Development Status :: 4 - Beta',
-      'Environment :: Console',
-      'Intended Audience :: Developers',
-      'License :: OSI Approved :: BSD License',
-      'Natural Language :: English',
-      'Operating System :: POSIX :: Linux',
-      'Programming Language :: Python :: 2.7',
-      'Programming Language :: Python :: Implementation :: CPython',
-      'Programming Language :: C++',
-      'Topic :: Software Development :: Code Generators',
+          'Development Status :: 4 - Beta',
+          'Environment :: Console',
+          'Intended Audience :: Developers',
+          'License :: OSI Approved :: BSD License',
+          'Natural Language :: English',
+          'Operating System :: POSIX :: Linux',
+          'Programming Language :: Python :: 2.7',
+          'Programming Language :: Python :: 3',
+          'Programming Language :: Python :: Implementation :: CPython',
+          'Programming Language :: C++',
+          'Topic :: Software Development :: Code Generators'
       ],
       license="BSD 3-Clause",
-      requires=['ply (>=3.4)', 'networkx (>=1.5)', 'numpy', 'colorlog'],
-      cmdclass={
-      'build': BuildWithPly,
-      'test': TestCommand,
-      'bench': BenchmarkCommand
-      }
-      )
+      install_requires=[
+          'ply>=3.4',
+          'networkx>=1.5',
+          'colorlog',
+          'decorator',
+      ],
+      entry_points={'console_scripts': ['pythran = pythran.run:run',
+                                        'pythran-config = pythran.config:run'],
+                    },
+      tests_require=['pytest', 'pytest-pep8'],
+      test_suite="pythran/test",
+      cmdclass={'build_py': BuildWithThirdParty, 'test': PyTest})

@@ -1,15 +1,22 @@
 """
 This code is extracted from the python source tree, and thus under the PSF
 License.
+
+Usage: unparse.py <path to source file>
 """
+from __future__ import print_function
 
-"Usage: unparse.py <path to source file>"
+import pythran.metadata as metadata
+import pythran.openmp as openmp
 
-
-import sys
 import ast
-import cStringIO
 import os
+import sys
+
+if sys.version_info[0] < 3:
+    import cStringIO
+else:
+    from io import StringIO as cStringIO
 
 
 # Large float and imaginary literals get turned into infinities in the AST.
@@ -62,11 +69,23 @@ class Unparser:
         self._indent += 1
 
     def leave(self):
-        "Decrease the indentation level."
+        """Decrease the indentation level."""
         self._indent -= 1
 
     def dispatch(self, tree):
-        "Dispatcher function, dispatching tree type T to method _T."
+        """Dispatcher function, dispatching tree type T to method _T."""
+        # display omp directive in python dump
+        for omp in metadata.get(tree, openmp.OMPDirective):
+            deps = list()
+            for dep in omp.deps:
+                old_file = self.f
+                self.f = StringIO.StringIO()
+                self.dispatch(dep)
+                deps.append(self.f.getvalue())
+                self.f = old_file
+            directive = omp.s.format(*deps)
+            self._Expr(ast.Expr(ast.Str(s=directive)))
+
         if isinstance(tree, list):
             for t in tree:
                 self.dispatch(t)
@@ -74,16 +93,26 @@ class Unparser:
         meth = getattr(self, "_" + tree.__class__.__name__)
         meth(tree)
 
-    ############### Unparsing methods ######################
+    # ############# Unparsing methods ######################
     # There should be one method per concrete grammar type #
     # Constructors should be grouped by sum type. Ideally, #
     # this would follow the order in the grammar, but      #
     # currently doesn't.                                   #
-    ########################################################
+    # ######################################################
 
     def _Module(self, tree):
+        # Goes through each top-level statement. If the special __init__()
+        # function is found, add a call to it because it's a special Pythran
+        # feature.
+        has_init = False
         for stmt in tree.body:
             self.dispatch(stmt)
+            if (type(stmt) is ast.FunctionDef and
+                    stmt.name == '__init__'):
+                has_init = True
+        # Call __init__() in which top statements are moved.
+        if has_init:
+            self.fill("__init__()")
 
     # stmt
     def _Expr(self, tree):
@@ -441,7 +470,7 @@ class Unparser:
         # This is necessary: -2147483648 is different from -(2147483648) on
         # a 32-bit machine (the first is an int, the second a long), and
         # -7j is different from -(7j).  (The first has real part 0.0, the
-        #second has real part -0.0.)
+        # second has real part -0.0.)
         if isinstance(t.op, ast.USub) and isinstance(t.operand, ast.Num):
             self.write("(")
             self.dispatch(t.operand)
@@ -451,8 +480,8 @@ class Unparser:
         self.write(")")
 
     binop = {"Add": "+", "Sub": "-", "Mult": "*", "Div": "/", "Mod": "%",
-                "LShift": "<<", "RShift": ">>", "BitOr": "|", "BitXor": "^",
-                "BitAnd": "&", "FloorDiv": "//", "Pow": "**"}
+             "LShift": "<<", "RShift": ">>", "BitOr": "|", "BitXor": "^",
+             "BitAnd": "&", "FloorDiv": "//", "Pow": "**"}
 
     def _BinOp(self, t):
         self.write("(")
@@ -462,8 +491,8 @@ class Unparser:
         self.write(")")
 
     cmpops = {"Eq": "==", "NotEq": "!=", "Lt": "<", "LtE": "<=", "Gt": ">",
-                "GtE": ">=", "Is": "is", "IsNot": "is not", "In": "in",
-                "NotIn": "not in"}
+              "GtE": ">=", "Is": "is", "IsNot": "is not", "In": "in",
+              "NotIn": "not in"}
 
     def _Compare(self, t):
         self.write("(")
@@ -616,12 +645,12 @@ def testdir(a):
         for n in names:
             fullname = os.path.join(a, n)
             if os.path.isfile(fullname):
-                output = cStringIO.StringIO()
-                print 'Testing %s' % fullname
+                output = StringIO.StringIO()
+                print('Testing %s' % fullname)
                 try:
                     roundtrip(fullname, output)
                 except Exception as e:
-                    print '  Failed to compile, exception is %s' % repr(e)
+                    print('  Failed to compile, exception is %s' % repr(e))
             elif os.path.isdir(fullname):
                 testdir(fullname)
 

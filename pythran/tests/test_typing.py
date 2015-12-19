@@ -1,7 +1,19 @@
 from test_env import TestEnv
 import unittest
+import numpy as np
+import pythran
 
 class TestTyping(TestEnv):
+
+    def test_index_dict_with_constant(self):
+        code = 'def index_dict_with_constant(d): return d[0]'
+        return self.run_test(code, {0:2}, index_dict_with_constant=[{int:int}])
+
+    def test_module_bad_attribute(self):
+        code = 'def module_bad_attribute(): import random as m; return m.real'
+
+        with self.assertRaises(pythran.syntax.PythranSyntaxError):
+            pythran.compile_pythrancode("dumbo", code)
 
     def test_list_of_set(self):
         code = '''
@@ -119,3 +131,22 @@ def recursive_interprocedural_typing1():
     l = [1,2,3]
     return s_perm(l)'''
         self.run_test(code, recursive_interprocedural_typing1=[])
+
+    def test_print_numpy_types(self):
+        self.run_test('''
+            import numpy
+            def print_type(t): print(t)
+            def print_numpy_types(n):
+                print_type(numpy.ones(n, dtype=bool).dtype)
+                print_type(numpy.ones(n, dtype=int).dtype)
+                print_type(numpy.ones(n, dtype=complex).dtype)
+                print_type(numpy.ones(n, dtype=float).dtype)
+                print_type(numpy.ones(n, dtype=numpy.uint8).dtype)
+                print_type(numpy.ones(n, dtype=numpy.uint16).dtype)
+                print_type(numpy.ones(n, dtype=numpy.uint64).dtype)
+                print_type(numpy.ones(n, dtype=numpy.double).dtype)
+                print_type(numpy.ones(n, dtype=numpy.complex).dtype)
+            ''',
+            3,
+            print_numpy_types=[int])
+

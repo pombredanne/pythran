@@ -2,7 +2,7 @@ from test_env import TestEnv
 
 class TestStr(TestEnv):
 
-   def test_str_startswith0(self):
+    def test_str_startswith0(self):
         self.run_test("def str_startswith0(s0, s1): return s0.startswith(s1)", "barbapapa", "barba", str_startswith0=[str, str])
 
     def test_str_startswith1(self):
@@ -75,7 +75,7 @@ class TestStr(TestEnv):
         self.run_test("def str_rstrip2(s): return s.rstrip(\"TSih\")", "ThiS iS a TeST", str_rstrip2=[str])
 
     def test_str_format(self):
-        self.run_test("def str_format(): a = 43.23; return '%.2f %.2f' % (a, a)", str_format=[])
+        self.run_test("def str_format(a): return '%.2f %.2f' % (a, a)", 43.23, str_format=[float])
 
     def test_str_join0(self):
         self.run_test("def str_join0(): a = ['1'] ; a.pop() ; return 'e'.join(a)", str_join0=[])
@@ -84,4 +84,27 @@ class TestStr(TestEnv):
         self.run_test("def str_join1(): a = ['l', 'l'] ; return 'o'.join(a)", str_join1=[])
 
     def test_str_join2(self):
-        self.run_test("def str_join2(): from itertools import ifilter ; a = ['l', 'l'] ; return 'o'.join(ifilter(len, a))", str_join2=[])
+        self.run_test("def str_join2(a): from itertools import ifilter; return 'o'.join(ifilter(len, a))", ['l', 'l'], str_join2=[[str]])
+
+    def test_str_find0(self):
+        self.run_test("def str_find0(s): return s.find('pop')", "popop", str_find0=[str])
+
+    def test_str_find1(self):
+        self.run_test("def str_find1(s): return s.find('pap')", "popop", str_find1=[str])
+
+    def test_str_reversal(self):
+        self.run_test("def str_reversal(s): return map(ord,reversed(s))", "dear", str_reversal=[str])
+
+    def test_str_substring_iteration(self):
+        self.run_test("def str_substring_iteration(s): return map(ord, s[1:-1])", "pythran", str_substring_iteration=[str])
+
+    def test_str_isalpha(self):
+        self.run_test("def str_isalpha(s, t, u): return s.isalpha(), t.isalpha(), u.isalpha()", "e", "1", "", str_isalpha=[str,str, str])
+
+    def test_str_isdigit(self):
+        self.run_test("def str_isdigit(s, t, u): return s.isdigit(), t.isdigit(), u.isdigit()", "e", "1", "", str_isdigit=[str,str, str])
+
+    def test_str_count(self):
+        self.run_test("def str_count(s, t, u, v): return s.count(t), s.count(u), s.count(v)",
+                      "pythran is good for health", "py", "niet", "t",
+                      str_count=[str, str, str, str])

@@ -1,14 +1,16 @@
-'''
+"""
 This module provides a way to pass information between passes as metadata.
-    * add attaches a metadata to a node
-    * get retrieves all metadata from a particular class attached to a node
-'''
+
+* add attaches a metadata to a node
+* get retrieves all metadata from a particular class attached to a node
+"""
 
 from ast import AST  # so that metadata are walkable as regular ast nodes
 
 
 class Metadata(AST):
     def __init__(self):
+        super(Metadata, self).__init__()
         self.data = list()
         self._fields = ('data',)
 
@@ -19,20 +21,14 @@ class Metadata(AST):
         self.data.append(data)
 
 
-class LocalVariable(AST):
-    pass
-
-
-class Attribute(AST):
-    pass
-
-
 class Lazy(AST):
-    pass
+
+    """ Metadata to mark variable which doesn't need to be evaluated now. """
 
 
 class Comprehension(AST):
     def __init__(self, *args):  # no positional argument to be deep copyable
+        super(Comprehension, self).__init__()
         if args:
             self.target = args[0]
 
@@ -49,3 +45,8 @@ def get(node, class_):
         return [s for s in getattr(node, 'metadata') if isinstance(s, class_)]
     else:
         return []
+
+
+def visit(self, node):
+    if hasattr(node, 'metadata'):
+        self.visit(node.metadata)

@@ -14,7 +14,7 @@ from .ancestors import Ancestors
 from .argument_effects import ArgumentEffects
 from .argument_read_once import ArgumentReadOnce
 from .ast_matcher import ASTMatcher, AST_any, AST_or, Placeholder, Check
-from .bounded_expressions import BoundedExpressions
+from .bound_expressions import BoundExpressions
 from .cfg import CFG
 from .constant_expressions import ConstantExpressions
 from .extended_syntax_check import ExtendedSyntaxCheck
@@ -29,7 +29,7 @@ from .imported_ids import ImportedIds
 from .is_assigned import IsAssigned
 from .lazyness_analysis import LazynessAnalysis
 from .literals import Literals
-from .local_declarations import LocalDeclarations
+from .local_declarations import LocalNodeDeclarations, LocalNameDeclarations
 from .locals_analysis import Locals
 from .node_count import NodeCount
 from .optimizable_comprehension import OptimizableComprehension

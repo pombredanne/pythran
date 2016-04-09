@@ -32,13 +32,28 @@ def dict_of_set():
         self.run_test(code, dict_of_set=[])
 
     def test_typing_aliasing_and_indices(self):
-        self.run_test('def typing_aliasing_and_indices(): d={};e={}; f = e or d; f[1]="e"; return d,e,f', typing_aliasing_and_indices=[])
+        self.run_test('def typing_aliasing_and_indices(i): d={};e={}; f = e or d; f[1]=i; return d,e,f', 118, typing_aliasing_and_indices=[int])
 
     def test_typing_aliasing_and_combiner(self):
-        self.run_test('def typing_aliasing_and_combiner(): d=set();e=set(); f = e or d; f.add("e"); return d,e,f', typing_aliasing_and_combiner=[])
+        self.run_test('def typing_aliasing_and_combiner(i): d=set();e=set(); f = e or d; f.add(i); return d,e,f', 117, typing_aliasing_and_combiner=[int])
 
     def test_typing_aliasing_and_combiner_back(self):
-        self.run_test('def typing_aliasing_and_combiner_back(): d=set();e=set(); f = e or d; e.add("e"); return d,e,f', typing_aliasing_and_combiner_back=[])
+        self.run_test('def typing_aliasing_and_combiner_back(i): d=set();e=set(); f = e or d; e.add(i); return d,e,f', 116, typing_aliasing_and_combiner_back=[int])
+
+    def test_typing_aliasing_and_fwd(self):
+        self.run_test('def typing_aliasing_and_fwd(i): fwd = lambda x:x; l = []; fwd(l).append(i); return l', 115, typing_aliasing_and_fwd=[int])
+
+    def test_typing_aliasing_and_constant_subscript(self):
+        self.run_test('def typing_aliasing_and_constant_subscript(i): a=[];b=[a];b[0].append(i); return a', 118, typing_aliasing_and_constant_subscript=[int])
+
+    def test_typing_aliasing_and_constant_subscript_and_call(self):
+        self.run_test('def typing_aliasing_and_constant_subscript_and_call(i): a=[];b=[a];(lambda x,y: x[y])(b,i).append(i); return a', 0, typing_aliasing_and_constant_subscript_and_call=[int])
+
+    def test_typing_aliasing_and_variable_subscript(self):
+        self.run_test('def typing_aliasing_and_variable_subscript(i): a=[];b=[a];b[i].append(i); return a', 0, typing_aliasing_and_variable_subscript=[int])
+
+    def test_typing_aliasing_and_variable_subscript_combiner(self):
+        self.run_test('def typing_aliasing_and_variable_subscript_combiner(i): a=[list.append, lambda x,y: x.extend([y])]; b = []; a[i](b, i); return b', 1, typing_aliasing_and_variable_subscript_combiner=[int])
 
     def test_typing_aliasing_and_update(self):
         code = '''
@@ -54,20 +69,28 @@ def typing_aliasing_and_update():
     def test_functional_variant_container0(self):
         code='''
 import math
-def functional_variant_container0():
+def functional_variant_container0(i):
     l=[]
     l.append(math.cos)
     l.append(math.sin)
-    return l[0](12)'''
-        self.run_test(code, functional_variant_container0=[])
+    return l[i](12)'''
+        self.run_test(code, 0, functional_variant_container0=[int])
 
     def test_functional_variant_container1(self):
         code='''
 import math
-def functional_variant_container1():
+def functional_variant_container1(i):
     l=[math.cos, math.sin]
-    return l[0](12)'''
-        self.run_test(code, functional_variant_container1=[])
+    return l[i](12)'''
+        self.run_test(code, 1, functional_variant_container1=[int])
+
+    def test_functional_variant_container2(self):
+        code='''
+import math
+l = [math.cos, math.sin, math.asin, math.acos, math.sqrt]
+def functional_variant_container2(i):
+    return l[i](1.)'''
+        self.run_test(code, 4, functional_variant_container2=[int])
 
     @unittest.skip("bad typing: need backward propagation")
     def test_type_set_in_loop(self):
@@ -150,3 +173,26 @@ def recursive_interprocedural_typing1():
             3,
             print_numpy_types=[int])
 
+    def test_constant_argument_variant_functor0(self):
+        self.run_test('''
+            def foo(x): x[0] = 0
+            def bar(x): x[1] = 1
+            l = [foo, bar]
+            def constant_argument_variant_functor0(i):
+                x = [-1, -1]
+                l[i](x)
+                return x''',
+            0,
+            constant_argument_variant_functor0=[int])
+
+    def test_constant_argument_variant_functor1(self):
+        self.run_test('''
+            def foo(x): x[0] = 0
+            def bar(x): x[1] = 1
+            l = [foo, bar]
+            def constant_argument_variant_functor1(i):
+                x = [i, i]
+                [f(x) for f in l]
+                return x''',
+            -1,
+            constant_argument_variant_functor1=[int])

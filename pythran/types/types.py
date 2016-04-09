@@ -5,19 +5,20 @@ This module performs the return type inference, according to symbolic types,
 '''
 
 from pythran.analyses import (LazynessAnalysis, StrictAliases, YieldPoints,
-                              LocalDeclarations)
+                              LocalNodeDeclarations)
 from pythran.config import cfg
 from pythran.cxxtypes import NamedType, ContainerType, PType, Assignable, Lazy
 from pythran.cxxtypes import ExpressionType, IteratorContentType, ReturnType
 from pythran.cxxtypes import GetAttr, DeclType, ElementType, IndexableType
 from pythran.cxxtypes import Weak, ListType, SetType, DictType, TupleType
-from pythran.cxxtypes import ArgumentType, Returnable
+from pythran.cxxtypes import ArgumentType, Returnable, CombinedTypes
 from pythran.intrinsic import UserFunction, MethodIntr, Class
 from pythran.passmanager import ModuleAnalysis
 from pythran.tables import operator_to_lambda, MODULES
 from pythran.types.conversion import PYTYPE_TO_CTYPE_TABLE, pytype_to_ctype
 from pythran.types.reorder import Reorder
 from pythran.utils import attr_to_path
+from pythran import metadata
 
 from collections import defaultdict
 from functools import partial
@@ -113,18 +114,15 @@ class Types(ModuleAnalysis):
                 return self.node_to_id(n.value, depth)
             else:
                 return self.node_to_id(n.value, 1 + depth)
-        # use return_alias information if any
+        # use alias information if any
         elif isinstance(n, ast.Call):
-            func = n.func
-            for alias in self.strict_aliases[func].aliases:
-                # handle backward type dependencies from method calls
-                signature = None
-                if isinstance(alias, MethodIntr):
-                    signature = alias
-                if signature:
-                    return_alias = signature.return_alias(n)
-                    if return_alias:  # else new location -> unboundable
-                        return self.node_to_id(list(return_alias)[0], depth)
+            for alias in self.strict_aliases[n].aliases:
+                if alias is n:  # no specific alias info
+                    continue
+                try:
+                    return self.node_to_id(alias, depth)
+                except UnboundableRValue:
+                    continue
         raise UnboundableRValue()
 
     def isargument(self, node):
@@ -165,14 +163,23 @@ class Types(ModuleAnalysis):
                 node_id, depth = self.node_to_id(node)
                 if depth > 0:
                     node = ast.Name(node_id, ast.Load())
+                    former_unary_op = unary_op
+
+                    # update the type to reflect container nesting
+                    def unary_op(x):
+                        return reduce(lambda t, n: ContainerType(t),
+                                      xrange(depth), former_unary_op(x))
+
+                    # patch the op, as we no longer apply op, but infer content
+                    # but it's dangerous to combine with a weakling
+                    def op(*types):
+                        nonweaks = [t for t in types if not t.isweak()]
+                        if len(nonweaks) == 1:
+                            return nonweaks[0]
+                        else:
+                            return CombinedTypes(*nonweaks)
+
                 self.name_to_nodes.setdefault(node_id, set()).add(node)
-
-                former_unary_op = unary_op
-
-                # update the type to reflect container nesting
-                def unary_op(x):
-                    return reduce(lambda t, n: ContainerType(t),
-                                  xrange(depth), former_unary_op(x))
 
             if isinstance(othernode, ast.FunctionDef):
                 new_type = NamedType(othernode.name)
@@ -236,7 +243,7 @@ class Types(ModuleAnalysis):
 
     def visit_FunctionDef(self, node):
         self.curr_locals_declaration = self.passmanager.gather(
-            LocalDeclarations,
+            LocalNodeDeclarations,
             node)
         self.current = node
         self.typedefs = list()
@@ -264,8 +271,9 @@ class Types(ModuleAnalysis):
         # return type may be unset if the function always raises
         return_type = self.result.get(node,
                                       NamedType("pythonic::types::none_type"))
+
         self.result[node] = (Returnable(return_type), self.typedefs)
-        for k in self.passmanager.gather(LocalDeclarations, node):
+        for k in self.passmanager.gather(LocalNodeDeclarations, node):
             self.result[k] = self.get_qualifier(k)(self.result[k])
 
     def get_qualifier(self, node):

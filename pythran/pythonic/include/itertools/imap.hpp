@@ -2,7 +2,7 @@
 #define PYTHONIC_INCLUDE_ITERTOOLS_IMAP_HPP
 
 #include "pythonic/include/itertools/common.hpp"
-#include "pythonic/include/types/none.hpp"
+#include "pythonic/include/types/NoneType.hpp"
 #include "pythonic/include/types/tuple.hpp"
 #include "pythonic/include/utils/int_.hpp"
 #include "pythonic/include/utils/iterator.hpp"
@@ -38,9 +38,7 @@ namespace pythonic
       struct imap_iterator
           : std::iterator<
                 typename utils::iterator_min<typename Iters::iterator...>::type,
-                typename imap_res<Operator, Iters...>::type, ptrdiff_t,
-                typename imap_res<Operator, Iters...>::type *,
-                typename imap_res<Operator, Iters...>::type /* no ref */> {
+                typename imap_res<Operator, Iters...>::type> {
 
         std::tuple<typename Iters::iterator...> it;
         Operator _op;

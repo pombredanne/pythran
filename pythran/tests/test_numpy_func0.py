@@ -242,7 +242,7 @@ def np_rosen_der(x):
         self.run_test("def np_mean5(a): from numpy import mean ; return mean(a, 2)", numpy.array([[[1, 2], [3, 4.]]]), np_mean5=[numpy.array([[[float]]])])
 
     def test_var0(self):
-        self.run_test("def np_var0(a): from numpy import var ; return var(a)", numpy.array([[1, 2], [3, 4]], dtype=float), np_var0=[numpy.array([[float]])])
+        self.run_test("def np_var0(a): return a.var()", numpy.array([[1, 2], [3, 4]], dtype=float), np_var0=[numpy.array([[float]])])
 
     def test_var1(self):
         self.run_test("def np_var1(a): from numpy import var ; return var(a, 1)", numpy.array([[1, 2], [3, 4.]]), np_var1=[numpy.array([[float]])])
@@ -259,6 +259,15 @@ def np_rosen_der(x):
     def test_var5(self):
         self.run_test("def np_var5(a): from numpy import var ; return var(a, 2)", numpy.array([[[1, 2], [3, 4.]]]), np_var5=[numpy.array([[[float]]])])
 
+    def test_std0(self):
+        self.run_test("def np_std0(a): from numpy import std ; return std(a)", numpy.array([[[1, 2], [3, 4]]]), np_std0=[numpy.array([[[int]]])])
+
+    def test_std1(self):
+        self.run_test("def np_std1(a): from numpy import std ; return std(a, 0)", numpy.array([[[1, 2], [3, 4]]]), np_std1=[numpy.array([[[int]]])])
+
+    def test_std2(self):
+        self.run_test("def np_std2(a): from numpy import std ; return std(a, 1)", numpy.array([[[1, 2], [3, 4]]]), np_std2=[numpy.array([[[int]]])])
+
     def test_logspace0(self):
         self.run_test("def np_logspace0(start, stop): from numpy import logspace ; start, stop = 3., 4. ; return logspace(start, stop, 4)", 3., 4., np_logspace0=[float, float])
 
@@ -272,7 +281,10 @@ def np_rosen_der(x):
         self.run_test("def np_lexsort0(surnames): from numpy import lexsort ; first_names = ('Heinrich', 'Galileo', 'Gustav') ; return lexsort((first_names, surnames))", ('Hertz',    'Galilei', 'Hertz'), np_lexsort0=[(str, str, str)])
 
     def test_lexsort1(self):
-        self.run_test("def np_lexsort1(a): from numpy import lexsort ; b = [9,4,0,4,0,2,1] ; return lexsort((a,b))", [1,5,1,4,3,4,4], np_lexsort1=[[int]])
+        self.run_test("def np_lexsort1(a): from numpy import lexsort ; b = [1,5,1,4,3,4,4] ; return lexsort((a,b))", [9,4,0,4,0,2,1], np_lexsort1=[[int]])
+
+    def test_lexsort2(self):
+        self.run_test("def np_lexsort2(a): from numpy import lexsort ; return lexsort((a+1,a-1))", numpy.array([1,5,1,4,3,4,4]), np_lexsort2=[numpy.array([int])])
 
     def test_issctype0(self):
         self.run_test("def np_issctype0(): from numpy import issctype, int32 ; a = int32 ; return issctype(a)", np_issctype0=[])
@@ -365,7 +377,7 @@ def np_rosen_der(x):
         self.run_test("def np_product(x):\n from numpy import product\n return product(x)", numpy.arange(1, 10), np_product=[numpy.array([int])])
 
     def test_ptp0(self):
-        self.run_test("def np_ptp0(x): from numpy import ptp ; return ptp(x)", numpy.arange(4).reshape((2,2)), np_ptp0=[numpy.array([[int]])])
+        self.run_test("def np_ptp0(x): return x.ptp()", numpy.arange(4).reshape((2,2)), np_ptp0=[numpy.array([[int]])])
 
     def test_ptp1(self):
         self.run_test("def np_ptp1(x): from numpy import ptp ; return ptp(x,0)", numpy.arange(4).reshape((2,2)), np_ptp1=[numpy.array([[int]])])
@@ -374,7 +386,7 @@ def np_rosen_der(x):
         self.run_test("def np_ptp2(x): from numpy import ptp ; return ptp(x,1)", numpy.arange(4).reshape((2,2)), np_ptp2=[numpy.array([[int]])])
 
     def test_put0(self):
-        self.run_test("def np_put0(x): from numpy import put ; put(x, [0,2], [-44, -55]); return x", numpy.arange(5), np_put0=[numpy.array([int])])
+        self.run_test("def np_put0(x): x.put([0,2], [-44, -55]); return x", numpy.arange(5), np_put0=[numpy.array([int])])
 
     def test_put1(self):
         self.run_test("def np_put1(x): from numpy import put ; put(x, [0,2,3], [57, 58]); return x", numpy.arange(6).reshape((2, 3)), np_put1=[numpy.array([[int]])])
@@ -388,14 +400,23 @@ def np_rosen_der(x):
     def test_putmask1(self):
         self.run_test("def np_putmask1(x): from numpy import putmask; putmask(x, x>1, [57, 58]); return x", numpy.arange(6).reshape((2,3)), np_putmask1=[numpy.array([[int]])])
 
-    def test_ravel(self):
-        self.run_test("def np_ravel(x): from numpy import ravel ; return ravel(x)", numpy.arange(6).reshape((2,3)), np_ravel=[numpy.array([[int]])])
+    def test_ravel0(self):
+        self.run_test("def np_ravel0(x): from numpy import ravel ; return ravel(x)", numpy.arange(6).reshape((2,3)), np_ravel0=[numpy.array([[int]])])
+
+    def test_ravel1(self):
+        self.run_test("def np_ravel1(x): return x.ravel()", numpy.arange(6).reshape((2,3)), np_ravel1=[numpy.array([[int]])])
 
     def test_repeat0(self):
         self.run_test("def np_repeat0(x): from numpy import repeat; return repeat(x, 3)", numpy.arange(3), np_repeat0=[numpy.array([int])])
 
     def test_repeat1(self):
-        self.run_test("def np_repeat1(x): from numpy import repeat; return repeat(x, 3)", numpy.arange(6).reshape(2,3), np_repeat1=[numpy.array([[int]])])
+        self.run_test("def np_repeat1(x): return x.repeat(3)", numpy.arange(6).reshape(2,3), np_repeat1=[numpy.array([[int]])])
+
+    def test_repeat2(self):
+        self.run_test("def np_repeat2(x): from numpy import repeat; return repeat(x, 4, axis=0)", numpy.arange(6).reshape(2,3), np_repeat2=[numpy.array([[int]])])
+
+    def test_repeat3(self):
+        self.run_test("def np_repeat3(x): from numpy import repeat; return repeat(x, 4, axis=1)", numpy.arange(6).reshape(2,3), np_repeat3=[numpy.array([[int]])])
 
     def test_resize4(self):
         self.run_test("def np_resize4(x): from numpy import resize ; return resize(x, (6,7))", numpy.arange(24).reshape((2,3,4)), np_resize4=[numpy.array([[[int]]])])
@@ -627,3 +648,9 @@ def np_rosen_der(x):
 
     def test_ediff1d1(self):
         self.run_test("def np_ediff1d1(x): from numpy import ediff1d ; return ediff1d(x)", [[1,2,4],[1,6,24]], np_ediff1d1=[[[int]]])
+
+    def test_print_slice(self):
+        self.run_test("def np_print_slice(a): print a[:-1]", numpy.arange(12), np_print_slice=[numpy.array([int])])
+
+    def test_print_expr(self):
+        self.run_test("def np_print_expr(a): print a * 2", numpy.arange(12), np_print_expr=[numpy.array([int])])

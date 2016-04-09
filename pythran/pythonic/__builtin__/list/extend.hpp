@@ -5,7 +5,7 @@
 
 #include "pythonic/__builtin__/None.hpp"
 #include "pythonic/types/list.hpp"
-#include "pythonic/types/none.hpp"
+#include "pythonic/types/NoneType.hpp"
 #include "pythonic/utils/functor.hpp"
 
 namespace pythonic
@@ -21,6 +21,18 @@ namespace pythonic
       types::none_type extend(types::list<T> &seq, types::list<F> const &add)
       {
         seq += add;
+        return __builtin__::None;
+      }
+
+      template <class T, class F>
+      types::none_type extend(types::list<T> &&seq, types::list<F> const &add)
+      {
+        std::move(seq) += add;
+        return __builtin__::None;
+      }
+      template <class F>
+      types::none_type extend(types::empty_list, types::list<F> const &)
+      {
         return __builtin__::None;
       }
 

@@ -96,15 +96,25 @@ class ArgumentEffects(ModuleAnalysis):
         while isinstance(node, ast.Subscript):
             node = node.value
         for node_alias in self.aliases[node].aliases:
-            try:
-                return self.current_function.func.args.args.index(node_alias)
-            except ValueError:
-                pass
+            if node_alias in self.current_arguments:
+                return self.current_arguments[node_alias]
+            if node_alias in self.current_subscripted_arguments:
+                return self.current_subscripted_arguments[node_alias]
         return -1
 
     def visit_FunctionDef(self, node):
         self.current_function = self.node_to_functioneffect[node]
+        self.current_arguments = {arg: i
+                                  for i, arg
+                                  in enumerate(node.args.args)}
+        self.current_subscripted_arguments = dict()
         assert self.current_function in self.result
+        self.generic_visit(node)
+
+    def visit_For(self, node):
+        ai = self.argument_index(node.iter)
+        if ai >= 0:
+            self.current_subscripted_arguments[node.target] = ai
         self.generic_visit(node)
 
     def visit_AugAssign(self, node):
@@ -125,8 +135,13 @@ class ArgumentEffects(ModuleAnalysis):
         for i, arg in enumerate(node.args):
             n = self.argument_index(arg)
             if n >= 0:
-                func_aliases = self.aliases[node].state[
-                    Aliases.access_path(node.func)]
+                func_aliases = self.aliases[node].state.get(
+                    Aliases.access_path(node.func))
+
+                # pessimistic case: no alias found
+                if func_aliases is None:
+                    self.current_function.update_effects[n] = True
+                    continue
 
                 # expand argument if any
                 func_aliases = reduce(

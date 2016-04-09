@@ -5,16 +5,17 @@ This module contains all pythran backends.
 '''
 from __future__ import print_function
 
-from pythran.analyses import ArgumentEffects, BoundedExpressions, Dependencies
-from pythran.analyses import LocalDeclarations, GlobalDeclarations, Scope
+from pythran.analyses import ArgumentEffects, BoundExpressions, Dependencies
+from pythran.analyses import LocalNodeDeclarations, GlobalDeclarations, Scope
 from pythran.analyses import YieldPoints, IsAssigned, ASTMatcher, AST_any
 from pythran.analyses import RangeValues, PureExpressions
 from pythran.cxxgen import Template, Include, Namespace, CompilationUnit
 from pythran.cxxgen import Statement, Block, AnnotatedStatement, Typedef
-from pythran.cxxgen import Value, FunctionDeclaration, EmptyStatement
+from pythran.cxxgen import Value, FunctionDeclaration, EmptyStatement, Static
 from pythran.cxxgen import FunctionBody, Line, ReturnStatement, Struct, Assign
 from pythran.cxxgen import For, While, TryExcept, ExceptHandler, If, AutoFor
-from pythran.cxxtypes import Assignable, DeclType, NamedType
+from pythran.cxxtypes import (Assignable, DeclType, NamedType,
+                              ListType, CombinedTypes, Lazy)
 from pythran.openmp import OMPDirective
 from pythran.passmanager import Backend
 from pythran.syntax import PythranSyntaxError
@@ -184,7 +185,7 @@ pythonic::types::none_type>::type result_type;
         self.result = None
         self.ldecls = set()
         super(Cxx, self).__init__(Dependencies, GlobalDeclarations,
-                                  BoundedExpressions, Types, ArgumentEffects,
+                                  BoundExpressions, Types, ArgumentEffects,
                                   Scope, RangeValues, PureExpressions)
 
     # mod
@@ -215,7 +216,7 @@ pythonic::types::none_type>::type result_type;
 
         locals_visited = []
         for varname in local_vars:
-            vartype = self.local_types[varname]
+            vartype = self.typeof(varname)
             decl = Statement("{} {}".format(vartype, varname))
             locals_visited.append(decl)
         self.ldecls = {ld for ld in self.ldecls if ld.id not in local_vars}
@@ -239,6 +240,12 @@ pythonic::types::none_type>::type result_type;
             else:
                 stmt[index] = AnnotatedStatement(stmt[index], directives)
         return stmt
+
+    def typeof(self, node):
+        if isinstance(node, str):
+            return self.typeof(self.local_names[node])
+        else:
+            return self.types[node].generate(self.lctx)
 
     # stmt
     def visit_FunctionDef(self, node):
@@ -284,21 +291,21 @@ pythonic::types::none_type>::type result_type;
                         visited.add(v)
                 return L
 
+        self.fname = node.name
+
         # prepare context and visit function body
         fargs = node.args.args
 
         formal_args = [arg.id for arg in fargs]
         formal_types = ["argument_type" + str(i) for i in xrange(len(fargs))]
 
-        self.ldecls = set(self.passmanager.gather(LocalDeclarations, node))
+        self.ldecls = set(self.passmanager.gather(LocalNodeDeclarations, node))
 
-        self.local_names = {sym.id for sym in self.ldecls}.union(formal_args)
+        self.local_names = {sym.id: sym for sym in self.ldecls}
+        self.local_names.update({arg.id: arg for arg in fargs})
         self.extra_declarations = []
 
-        lctx = CachedTypeVisitor()
-        self.local_types = {n: self.types[n].generate(lctx)
-                            for n in self.ldecls}
-        self.local_types.update((n.id, t) for n, t in self.local_types.items())
+        self.lctx = CachedTypeVisitor()
 
         # choose one node among all the ones with the same name for each name
         self.ldecls = set({n.id: n for n in self.ldecls}.itervalues())
@@ -438,7 +445,7 @@ pythonic::types::none_type>::type result_type;
                              self.yields.itervalues(),
                              key=lambda x: x[0])))))
 
-            ctx = CachedTypeVisitor(lctx)
+            ctx = CachedTypeVisitor(self.lctx)
             next_members = ([Statement("{0} {1}".format(ft, fa))
                              for (ft, fa) in zip(formal_types, formal_args)] +
                             [Statement(
@@ -538,7 +545,7 @@ pythonic::types::none_type>::type result_type;
                 "{0}::operator()".format(node.name),
                 formal_types,
                 formal_args)
-            ctx = CachedTypeVisitor(lctx)
+            ctx = CachedTypeVisitor(self.lctx)
             operator_local_declarations = (
                 [Statement("{0} {1}".format(
                     self.types[k].generate(ctx), k.id)) for k in self.ldecls] +
@@ -588,7 +595,18 @@ pythonic::types::none_type>::type result_type;
                     Cxx.final_statement))
                 ])
         else:
-            stmt = ReturnStatement(self.visit(node.value))
+            value = self.visit(node.value)
+            if metadata.get(node, metadata.StaticReturn):
+                # don't rely on auto because we want to make sure there's no
+                # conversion each time we return
+                # this happens for variant because the variant param
+                # order may differ from the init order (because of the way we
+                # do type inference
+                rtype = "typename {}::type::result_type".format(self.fname)
+                stmt = Block([Assign("static %s tmp_global" % rtype, value),
+                              ReturnStatement("tmp_global")])
+            else:
+                stmt = ReturnStatement(value)
             return self.process_omp_attachements(node, stmt)
 
     def visit_Delete(self, _):
@@ -636,8 +654,18 @@ pythonic::types::none_type>::type result_type;
             tdecls = {t.id for t in node.targets}
             self.ldecls = {d for d in self.ldecls if d.id not in tdecls}
             # add a local declaration
-            alltargets = '{} {}'.format(self.local_types[node.targets[0]],
-                                        alltargets)
+            if self.types[node.targets[0]].iscombined():
+                alltargets = '{} {}'.format(self.typeof(node.targets[0]),
+                                            alltargets)
+            elif isinstance(self.types[node.targets[0]], Assignable):
+                alltargets = '{} {}'.format(
+                    Assignable(NamedType('decltype({})'.format(value))),
+                    alltargets)
+            else:
+                assert isinstance(self.types[node.targets[0]], Lazy)
+                alltargets = '{} {}'.format(
+                    Lazy(NamedType('decltype({})'.format(value))),
+                    alltargets)
         stmt = Assign(alltargets, value)
         return self.process_omp_attachements(node, stmt)
 
@@ -963,28 +991,31 @@ pythonic::types::none_type>::type result_type;
             header, loop = self.gen_c_for(node, target, loop_body)
         else:
 
-            # Iterator declaration
-            local_iter = "__iter{0}".format(len(self.break_handlers))
-            local_iter_decl = Assignable(DeclType(iterable))
-
-            self.handle_omp_for(node, local_iter)
-
-            # For yield function, iterable is globals.
-            if self.yields:
-                self.extra_declarations.append((local_iter, local_iter_decl,))
-                local_iter_decl = ""
-
-            # Assign iterable
-            # For C loop, it avoid issue if upper bound is reassign in the loop
-            header = [Statement("{0} {1} = {2}".format(local_iter_decl,
-                                                       local_iter,
-                                                       iterable))]
             if self.can_use_autofor(node):
+                header = []
                 self.ldecls = {d for d in self.ldecls
                                if d.id != node.target.id}
-                autofor = AutoFor(target, local_iter, loop_body)
+                autofor = AutoFor(target, iterable, loop_body)
                 loop = [self.process_omp_attachements(node, autofor)]
             else:
+                # Iterator declaration
+                local_iter = "__iter{0}".format(len(self.break_handlers))
+                local_iter_decl = Assignable(DeclType(iterable))
+
+                self.handle_omp_for(node, local_iter)
+
+                # For yield function, iterable is globals.
+                if self.yields:
+                    self.extra_declarations.append(
+                        (local_iter, local_iter_decl,))
+                    local_iter_decl = ""
+
+                # Assign iterable
+                # For C loop, it avoids issues
+                # if the upper bound is assigned in the loop
+                header = [Statement("{0} {1} = {2}".format(local_iter_decl,
+                                                           local_iter,
+                                                           iterable))]
                 loop = self.gen_for(node, target, local_iter, loop_body)
 
         # For xxxComprehension, it is replaced by a for loop. In this case,
@@ -1088,7 +1119,7 @@ pythonic::types::none_type>::type result_type;
     # expr
     def visit_BoolOp(self, node):
         values = [self.visit(value) for value in node.values]
-        if node in self.bounded_expressions:
+        if node in self.bound_expressions:
             op = operator_to_lambda[type(node.op)]
         elif isinstance(node.op, ast.And):
             def op(l, r):
@@ -1123,16 +1154,20 @@ pythonic::types::none_type>::type result_type;
             return "pythonic::__builtin__::functor::list{}()"
         else:
             elts = [self.visit(n) for n in node.elts]
+            elts_type = [DeclType(elt) for elt in elts]
+            if len(elts_type) == 1:
+                elts_type = elts_type[0]
+            else:
+                elts_type = CombinedTypes(*elts_type)
+            node_type = ListType(elts_type)
+
             # constructor disambiguation, clang++ workaround
             if len(elts) == 1:
                 elts.append('pythonic::types::single_value()')
-                return "{0}({{ {1} }})".format(
-                    Assignable(self.types[node]),
-                    ", ".join(elts))
-            else:
-                return "{0}({{ {1} }})".format(
-                    Assignable(self.types[node]),
-                    ", ".join(elts))
+
+            return "{0}({{ {1} }})".format(
+                Assignable(node_type),
+                ", ".join(elts))
 
     def visit_Set(self, node):
         if not node.elts:  # empty set
@@ -1223,7 +1258,7 @@ pythonic::types::none_type>::type result_type;
         # slice optimization case
         elif (isinstance(node.slice, ast.Slice) and
               (isinstance(node.ctx, ast.Store) or
-               node not in self.bounded_expressions)):
+               node not in self.bound_expressions)):
             slice_ = self.visit(node.slice)
             return "{1}({0})".format(slice_, value)
         # extended slice case

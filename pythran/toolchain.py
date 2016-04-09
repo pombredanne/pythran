@@ -113,10 +113,17 @@ def generate_cxx(module_name, code, specs=None, optimizations=None):
     returns a PythonModule object
 
     '''
+    if sys.version_info[0] == 3:
+        raise ValueError(
+            "Pythran does not fully support Python3, "
+            "it can only be used to compile C++ code "
+            "generated with the -E flag with a Python2 version of Pythran. "
+            "Sorry about this :-/")
+
     pm = PassManager(module_name)
 
     # front end
-    ir, renamings, docstrings, has_init = frontend.parse(pm, code)
+    ir, renamings, docstrings = frontend.parse(pm, code)
 
     # middle-end
     optimizations = (optimizations or
@@ -156,7 +163,7 @@ def generate_cxx(module_name, code, specs=None, optimizations=None):
                     'version': __version__,
                     'date': datetime.now()}
 
-        mod = PythonModule(module_name, docstrings, metainfo, has_init)
+        mod = PythonModule(module_name, docstrings, metainfo)
         mod.add_to_preamble(Define("BOOST_SIMD_NO_STRICT_ALIASING", "1"))
         mod.add_to_includes(Include("pythonic/core.hpp"),
                             Include("pythonic/python/core.hpp"),
@@ -172,6 +179,13 @@ def generate_cxx(module_name, code, specs=None, optimizations=None):
         for function_name, signatures in specs.iteritems():
             internal_func_name = renamings.get(function_name,
                                                function_name)
+            # global variables are functions with no signatures :-)
+            if not signatures:
+                mod.add_global_var(function_name,
+                                   "{}()()".format(
+                                       pythran_ward + '{0}::{1}'.format(
+                                           module_name, internal_func_name)))
+
             for sigid, signature in enumerate(signatures):
                 numbered_function_name = "{0}{1}".format(internal_func_name,
                                                          sigid)
@@ -326,7 +340,7 @@ def compile_pythranfile(file_path, output_file=None, module_name=None,
     # Add compiled module path to search for imported modules
     sys.path.append(os.path.dirname(file_path))
 
-    output_file = compile_pythrancode(module_name, file(file_path).read(),
+    output_file = compile_pythrancode(module_name, open(file_path).read(),
                                       output_file=output_file,
                                       cpponly=cpponly,
                                       **kwargs)

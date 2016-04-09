@@ -37,6 +37,7 @@ class SpecParser:
         'complex': 'COMPLEX',
         'int': 'INT',
         'long': 'LONG',
+        'None': 'NONE',
         'float': 'FLOAT',
         'uint8': 'UINT8',
         'uint16': 'UINT16',
@@ -91,15 +92,22 @@ class SpecParser:
 
     def p_exports(self, p):
         '''exports :
-                   | export opt_craps exports'''
-        p[0] = self.exports
+                   | PYTHRAN EXPORT export_list opt_craps exports'''
+
+    def p_export_list(self, p):
+        '''export_list : export
+                  | export COMMA export_list'''
 
     def p_export(self, p):
-        '''export : PYTHRAN EXPORT IDENTIFIER LPAREN opt_types RPAREN
-                  | PYTHRAN EXPORT EXPORT LPAREN opt_types RPAREN'''
+        '''export : IDENTIFIER LPAREN opt_types RPAREN
+                  | IDENTIFIER
+                  | EXPORT LPAREN opt_types RPAREN'''
         # handle the unlikely case where the IDENTIFIER is ...
-        # export or pythran :-)
-        self.exports[p[3]] = self.exports.get(p[3], ()) + (p[5],)
+        # export :-)
+        if len(p) > 2:
+            self.exports[p[1]] = self.exports.get(p[1], ()) + (p[3],)
+        else:
+            self.exports[p[1]] = ()
 
     def p_opt_craps(self, p):
         '''opt_craps :
@@ -123,6 +131,7 @@ class SpecParser:
                 | COMPLEX
                 | INT
                 | LONG
+                | NONE
                 | FLOAT
                 | UINT8
                 | UINT16
@@ -151,20 +160,18 @@ class SpecParser:
         '''type : term
                 | type LIST
                 | type SET
-                | type LARRAY RARRAY
-                | type LARRAY COLUMN COLUMN RARRAY
+                | type LARRAY array_indices RARRAY
                 | type COLUMN type DICT
                 | LPAREN types RPAREN'''
+
         if len(p) == 2:
             p[0] = p[1]
         elif len(p) == 3 and p[2] == 'list':
             p[0] = [p[1]]
         elif len(p) == 3 and p[2] == 'set':
             p[0] = {p[1]}
-        elif len(p) == 4 and p[3] == ']':
-            p[0] = array([p[1]])
-        elif len(p) == 6 and p[5] == ']':
-            p[0] = array([p[1]])[::-1]
+        elif len(p) == 5 and p[4] == ']':
+            p[0] = reduce(lambda x, y: array([x])[::y], p[3], p[1])
         elif len(p) == 5:
             p[0] = {p[1]: p[3]}
         elif len(p) == 4 and p[3] == ')':
@@ -173,12 +180,30 @@ class SpecParser:
             raise SyntaxError("Invalid Pythran spec. "
                               "Unknown text '{0}'".format(p.value))
 
+    def p_array_indices(self, p):
+        '''array_indices : array_index
+                         | array_index COMMA array_indices'''
+        if len(p) == 2:
+            p[0] = p[1],
+        else:
+            p[0] = (p[1],) + p[3]
+
+    def p_array_index(self, p):
+        '''array_index :
+                       | COLUMN
+                       | COLUMN COLUMN'''
+        if len(p) == 3:
+            p[0] = -1
+        else:
+            p[0] = 1
+
     def p_term(self, p):
         '''term : STR
                 | BOOL
                 | COMPLEX
                 | INT
                 | LONG
+                | NONE
                 | FLOAT
                 | UINT8
                 | UINT16
@@ -199,6 +224,8 @@ class SpecParser:
         from numpy import uint8, uint16, uint32, uint64
 
         p[0] = eval(p[1])
+        if p[0] is None:
+            p[0] = type(None)
 
     def p_error(self, p):
         p_val = p.value if p else ''

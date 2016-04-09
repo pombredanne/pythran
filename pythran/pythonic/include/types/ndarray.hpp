@@ -393,14 +393,14 @@ namespace pythonic
       typename std::enable_if<
           is_numexpr_arg<F>::value and
               not std::is_same<bool, typename F::dtype>::value,
-          ndarray<T, 1>>::type
+          ndarray<T, N>>::type
       operator[](F const &filter) const;
 
       template <class F> // indexing through an array of indices -- a view
       typename std::enable_if<
           is_numexpr_arg<F>::value and
               not std::is_same<bool, typename F::dtype>::value,
-          ndarray<T, 1>>::type
+          ndarray<T, N>>::type
       fast(F const &filter) const;
 
       /* through iterators */
@@ -766,6 +766,28 @@ namespace pythonic
 
     static types::numpy_texpr<E> convert(PyObject *obj);
   };
+}
+
+/* specialization of std::copy to avoid the multiple calls implied by the
+ * recursive calls to std::copy */
+namespace std
+{
+  template <class T, size_t N>
+  typename pythonic::types::nditerator<pythonic::types::ndarray<T, N>> copy(
+      typename pythonic::types::const_nditerator<pythonic::types::ndarray<T, N>>
+          begin,
+      typename pythonic::types::const_nditerator<pythonic::types::ndarray<T, N>>
+          end,
+      typename pythonic::types::nditerator<pythonic::types::ndarray<T, N>> out)
+  {
+    auto &&shape = begin.data.shape();
+    const long offset = std::accumulate(shape.begin() + 1, shape.end(), 1L,
+                                        std::multiplies<long>());
+    std::copy(begin.data.buffer + begin.index * offset,
+              end.data.buffer + end.index * offset,
+              out.data.buffer + out.index * offset);
+    return out + (end - begin);
+  }
 }
 
 #endif

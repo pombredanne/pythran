@@ -480,7 +480,7 @@ class PythonModule(object):
     '''
     Wraps the creation of a Pythran module wrapped a Python native Module
     '''
-    def __init__(self, name, docstrings, metadata, has_init):
+    def __init__(self, name, docstrings, metadata):
         '''
         Builds an empty PythonModule
         '''
@@ -488,10 +488,10 @@ class PythonModule(object):
         self.preamble = []
         self.includes = []
         self.functions = {}
+        self.global_vars = []
         self.implems = []
         self.wrappers = []
         self.docstrings = docstrings
-        self.has_init = has_init
 
         self.metadata = metadata
         moduledoc = self.docstring(self.docstrings.get(None, ""))
@@ -610,12 +610,22 @@ class PythonModule(object):
         func_descriptor = wrapper_name, types
         self.functions.setdefault(name, []).append(func_descriptor)
 
+    def add_global_var(self, name, init):
+        self.global_vars.append(name)
+        self.implems.append(Assign('static PyObject* ' + name,
+                                   'to_python({})'.format(init)))
+
     def generate(self):
         """Generate (i.e. yield) the source code of the
         module line-by-line.
         """
         themethods = []
+        theextraobjects = []
         theoverloads = []
+        for vname in self.global_vars:
+            theextraobjects.append(
+                'PyModule_AddObject(theModule, "{0}", {0});'.format(vname))
+
         for fname, overloads in self.functions.items():
             tryall = []
             candidates = []
@@ -673,17 +683,6 @@ class PythonModule(object):
             }};
             '''.format(methods="".join(m + "," for m in themethods))
 
-        module_init = ""
-        if self.has_init:
-            module_init = '''
-                try {{
-                    {ward}{module_name}::__init__()();
-                }}
-                {catches}
-            '''.format(module_name=self.name,
-                       ward=pythran_ward,
-                       catches='\n'.join(self.catches))
-
         module = '''
             #if PY_MAJOR_VERSION >= 3
               static struct PyModuleDef moduledef = {{
@@ -703,6 +702,10 @@ class PythonModule(object):
             #define PYTHRAN_RETURN return
             #define PYTHRAN_MODULE_INIT(s) init##s
             #endif
+            PyMODINIT_FUNC
+            PYTHRAN_MODULE_INIT({name})(void)
+            __attribute__ ((visibility("default")))
+            __attribute__ ((externally_visible));
             PyMODINIT_FUNC
             PYTHRAN_MODULE_INIT({name})(void) {{
                 #ifdef PYTHONIC_TYPES_NDARRAY_HPP
@@ -727,11 +730,11 @@ class PythonModule(object):
                 PyModule_AddObject(theModule,
                                    "__pythran__",
                                    theDoc);
-                {module_init}
+                {extraobjects}
                 PYTHRAN_RETURN;
             }}
             '''.format(name=self.name,
-                       module_init=module_init,
+                       extraobjects='\n'.join(theextraobjects),
                        **self.metadata)
 
         body = (self.preamble +

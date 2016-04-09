@@ -26,6 +26,10 @@ import os.path
 #pythran export a( uint8 list)
 #pythran export a( int16 [])
 #pythran export a( uint16 [][])
+#pythran export a( uint16 [::][])
+#pythran export a( uint16 [:,:,:])
+#pythran export a( uint16 [:,::,:])
+#pythran export a( uint16 [,,])
 #pythran export a( (int32, ( uint32 , int64 ) ) )
 #pythran export a( uint64:float32 dict )
 #pythran export a( float64, complex64, complex128 )
@@ -116,3 +120,9 @@ def bar(i): return
         self.assertEquals(len(pythran.spec_parser(code)), 1)
         self.assertEquals(len(pythran.spec_parser(code)['foo']), 2)
 
+    def test_var_export0(self):
+        code = '''
+#      pythran export foo
+foo = 1
+            '''
+        self.assertTrue(pythran.spec_parser(code))
